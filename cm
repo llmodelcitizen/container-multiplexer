@@ -10,14 +10,19 @@ import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+import shutil
 import warnings
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
-import docker
-from docker.errors import NotFound, APIError
+try:
+    import docker
+    from docker.errors import NotFound, APIError
+except ImportError:
+    sys.exit("Error: Python 'docker' package not installed. See README for setup instructions.")
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 BASE_PORT = 2200
+MAX_INSTANCE = 499
 VERSION = "dev"
 IMAGE_NAME = "cm"
 WORKSPACES_DIR = SCRIPT_DIR / "workspaces"
@@ -34,19 +39,30 @@ def run_tmux(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a tmux command, printing it to stderr first."""
     cmd = ["tmux"] + args
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
-    return subprocess.run(cmd, **kwargs)
+    try:
+        return subprocess.run(cmd, **kwargs)
+    except FileNotFoundError:
+        sys.exit("Error: tmux is not installed.")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"Error: tmux command failed: {' '.join(args)}")
 
 
 def exec_tmux(args: list[str]) -> None:
     """Replace current process with tmux command, printing it to stderr first."""
     cmd = ["tmux"] + args
     print(f"+ {' '.join(cmd)}", file=sys.stderr)
-    os.execlp("tmux", *cmd)
+    try:
+        os.execlp("tmux", *cmd)
+    except FileNotFoundError:
+        sys.exit("Error: tmux is not installed.")
 
 
 def get_client() -> docker.DockerClient:
     """Get Docker client."""
-    return docker.from_env()
+    try:
+        return docker.from_env()
+    except docker.errors.DockerException:
+        sys.exit("Error: Cannot connect to Docker. Is the Docker daemon running?")
 
 
 def get_instance_config(n: int) -> dict:
@@ -85,17 +101,19 @@ def parse_instances(args: list[str]) -> list[int]:
                     start, end = end, start
                 instances.extend(range(start, end + 1))
             except ValueError:
-                raise argparse.ArgumentTypeError(f"Invalid range: {arg}")
+                sys.exit(f"Invalid range: {arg}")
         else:
             try:
                 instances.append(int(arg))
             except ValueError:
-                raise argparse.ArgumentTypeError(f"Invalid instance: {arg}")
+                sys.exit(f"Invalid instance: {arg}")
 
-    # Validate all instances are positive
+    # Validate instance range
     for n in instances:
         if n < 1:
-            raise argparse.ArgumentTypeError(f"Instance {n} must be positive")
+            sys.exit(f"Instance {n} must be positive")
+        if n > MAX_INSTANCE:
+            sys.exit(f"Instance {n} exceeds maximum ({MAX_INSTANCE})")
 
     return sorted(set(instances))
 
@@ -192,7 +210,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
                 detach=True,
                 name=cfg["container"],
                 hostname=cfg["container"],
-                ports={"22/tcp": port},
+                ports={"22/tcp": ("127.0.0.1", port)},
                 volumes={
                     str(auth_keys): {
                         "bind": "/home/me/.ssh/authorized_keys",
@@ -404,7 +422,7 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
     Returns True if all operations succeeded.
     """
     all_success = True
-    with ThreadPoolExecutor(max_workers=len(instances)) as executor:
+    with ThreadPoolExecutor(max_workers=min(len(instances), 32)) as executor:
         future_to_n = {executor.submit(worker_func, n): n for n in instances}
         for future in as_completed(future_to_n):
             try:
@@ -515,14 +533,17 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         print(f"Instance {args.instance} is not running")
         return 1
 
-    os.execlp("ssh", "ssh",
-              "-o", "StrictHostKeyChecking=no",
-              "-o", "UserKnownHostsFile=/dev/null",
-              "-o", "LogLevel=ERROR",
-              "-o", "SetEnv=LANG=en_US.UTF-8",
-              "-o", "SendEnv=-LANG -LC_*",
-              "-p", str(cfg["port"]),
-              "cm")
+    try:
+        os.execlp("ssh", "ssh",
+                  "-o", "StrictHostKeyChecking=no",
+                  "-o", "UserKnownHostsFile=/dev/null",
+                  "-o", "LogLevel=ERROR",
+                  "-o", "SetEnv=LANG=en_US.UTF-8",
+                  "-o", "SendEnv=-LANG -LC_*",
+                  "-p", str(cfg["port"]),
+                  "cm")
+    except FileNotFoundError:
+        sys.exit("Error: ssh is not installed.")
 
 
 def parse_status(status_str: str) -> tuple[str, str]:
@@ -914,7 +935,7 @@ _cm_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart rm ssh list logs pan win kill broadcast autocomplete version"
+    local commands="start stop restart rm ssh list logs pan win kill broadcast version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -956,29 +977,39 @@ _cm_completions() {
             instances=$(_cm_complete_instances running)
             COMPREPLY=($(compgen -W "$instances" -- "$cur"))
             ;;
-        start|pan|win)
+        start)
             # Multiple instance numbers (no duplicates)
             local instances
             instances=$(_cm_complete_instances instances)
             COMPREPLY=($(compgen -W "$(_filter_used $instances)" -- "$cur"))
             ;;
+        pan|win)
+            # Flags or running instance numbers (no duplicates)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--sync -s" -- "$cur"))
+            else
+                local instances
+                instances=$(_cm_complete_instances running)
+                COMPREPLY=($(compgen -W "$(_filter_used $instances)" -- "$cur"))
+            fi
+            ;;
         stop)
             # Multiple running instances plus "all" (no duplicates)
             local instances
             instances=$(_cm_complete_instances running)
-            COMPREPLY=($(compgen -W "$(_filter_used $instances all)" -- "$cur"))
+            COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
             ;;
         restart)
             # Multiple instance numbers plus "all" (no duplicates)
             local instances
             instances=$(_cm_complete_instances instances)
-            COMPREPLY=($(compgen -W "$(_filter_used $instances all)" -- "$cur"))
+            COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
             ;;
         rm)
             # Multiple instance numbers plus "all" for dead containers (no duplicates)
             local instances
             instances=$(_cm_complete_instances dead)
-            COMPREPLY=($(compgen -W "$(_filter_used $instances all)" -- "$cur"))
+            COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
             ;;
         kill)
             # Tmux session names (no duplicates)

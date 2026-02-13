@@ -35,7 +35,8 @@ chmod +x "$INSTALL_DIR/cm"
 if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     CM_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)
     if [[ -n "$CM_VERSION" ]]; then
-        sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION\"/" "$INSTALL_DIR/cm"
+        CM_VERSION_SAFE=$(printf '%s' "$CM_VERSION" | sed 's/[&/\]/\\&/g')
+        sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
         echo "Version: $CM_VERSION"
     fi
 fi
