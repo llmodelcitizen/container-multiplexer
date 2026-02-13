@@ -3,10 +3,24 @@ FROM debian:latest
 RUN apt-get update && apt-get upgrade -y
 
 RUN apt-get install -y \
-    vim \
-    openssh-server \
+    build-essential \
     curl \
-    sudo
+    gh \
+    git \
+    htop \
+    locales \
+    net-tools \
+    netcat-openbsd \
+    openssh-server \
+    python3 \
+    python3-pip \
+    python3-venv \
+    sudo \
+    vim \
+    wget
+
+# Generate locale to prevent setlocale warnings from SSH clients
+RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 
 
 # Create "me" user with sudo access

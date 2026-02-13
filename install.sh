@@ -11,7 +11,7 @@ echo "============"
 echo
 echo "This will:"
 echo "  1. Copy 'cm' to your chosen directory"
-echo "  2. Create symlinks for 'authorized_keys' and 'workspaces/'"
+echo "  2. Create symlinks for 'workspaces/' (and 'authorized_keys' if present)"
 echo
 read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
@@ -31,6 +31,15 @@ rm -f "$INSTALL_DIR/cm"
 cp "$SCRIPT_DIR/cm" "$INSTALL_DIR/cm"
 chmod +x "$INSTALL_DIR/cm"
 
+# Inject version from git
+if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    CM_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)
+    if [[ -n "$CM_VERSION" ]]; then
+        sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION\"/" "$INSTALL_DIR/cm"
+        echo "Version: $CM_VERSION"
+    fi
+fi
+
 # Helper to safely create symlink (only removes existing symlinks, never directories)
 safe_symlink() {
     local target="$1"
@@ -47,7 +56,11 @@ safe_symlink() {
     echo "Created symlink: $link -> $target"
 }
 
-safe_symlink "$SCRIPT_DIR/authorized_keys" "$INSTALL_DIR/authorized_keys"
+if [[ -f "$SCRIPT_DIR/authorized_keys" ]]; then
+    safe_symlink "$SCRIPT_DIR/authorized_keys" "$INSTALL_DIR/authorized_keys"
+else
+    echo "No project-root authorized_keys found; will use ~/.ssh/authorized_keys"
+fi
 safe_symlink "$SCRIPT_DIR/workspaces" "$INSTALL_DIR/workspaces"
 
 echo
