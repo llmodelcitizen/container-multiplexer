@@ -121,26 +121,24 @@ def parse_instances(args: list[str]) -> list[int]:
 def get_running_instances(client: docker.DockerClient) -> list[int]:
     """Get list of running instance numbers."""
     containers = client.api.containers(
-        filters={"name": "cm-", "status": "running"}
+        filters={"label": "cm.managed=true", "status": "running"}
     )
     instances = []
     for c in containers:
         names = c.get("Names", [])
         if not names:
             continue
-        name = names[0].lstrip("/")
-        if name.startswith("cm-"):
-            try:
-                n = int(name.split("-")[1])
-                instances.append(n)
-            except (IndexError, ValueError):
-                continue
+        try:
+            n = int(names[0].lstrip("/").split("-")[1])
+            instances.append(n)
+        except (IndexError, ValueError):
+            continue
     return sorted(instances)
 
 
 def get_dead_instances(client: docker.DockerClient) -> list[int]:
     """Get list of dead (exited/created) instance numbers."""
-    containers = client.api.containers(all=True, filters={"name": "cm-"})
+    containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
     instances = []
     for c in containers:
         state = c.get("State", "")
@@ -149,13 +147,11 @@ def get_dead_instances(client: docker.DockerClient) -> list[int]:
         names = c.get("Names", [])
         if not names:
             continue
-        name = names[0].lstrip("/")
-        if name.startswith("cm-"):
-            try:
-                n = int(name.split("-")[1])
-                instances.append(n)
-            except (IndexError, ValueError):
-                continue
+        try:
+            n = int(names[0].lstrip("/").split("-")[1])
+            instances.append(n)
+        except (IndexError, ValueError):
+            continue
     return sorted(instances)
 
 
@@ -222,6 +218,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
                     },
                 },
                 restart_policy={"Name": "unless-stopped"},
+                labels={"cm.managed": "true"},
             )
             return (port, None)
         except APIError as e:
@@ -520,7 +517,67 @@ def cmd_rm(args: argparse.Namespace) -> int:
     else:
         client = get_client()
         success = rm_instance(client, instances[0])
+
+    remaining = [get_instance_config(n)["workspace"] for n in instances
+                 if get_instance_config(n)["workspace"].exists()]
+    if remaining:
+        dirs = ", ".join(d.name + "/" for d in remaining)
+        print(f"Note: workspace(s) remain on disk: {dirs}")
+
     return 0 if success else 1
+
+
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Remove workspace directories that have no matching container."""
+    client = get_client()
+
+    # Get all container instance numbers (any state)
+    containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
+    container_nums = set()
+    for c in containers:
+        names = c.get("Names", [])
+        if not names:
+            continue
+        try:
+            container_nums.add(int(names[0].lstrip("/").split("-")[1]))
+        except (IndexError, ValueError):
+            continue
+
+    # Find workspace dirs with no matching container
+    orphans = []
+    for d in sorted(WORKSPACES_DIR.iterdir()):
+        if not d.is_dir() or not d.name.startswith("cm."):
+            continue
+        try:
+            n = int(d.name.split(".")[1])
+        except (IndexError, ValueError):
+            continue
+        if n not in container_nums:
+            orphans.append(d)
+
+    if not orphans:
+        print("No orphaned workspaces found (use 'cm rm all' first to remove dead containers)")
+        return 0
+
+    print(f"Orphaned workspaces ({len(orphans)}):")
+    for d in orphans:
+        print(f"  {d.name}/")
+
+    try:
+        response = input(f"Remove all {len(orphans)} workspace(s)? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return 1
+
+    if response != "y":
+        print("Aborted")
+        return 1
+
+    for d in orphans:
+        shutil.rmtree(d)
+        print(f"Removed {d.name}/")
+
+    return 0
 
 
 def cmd_ssh(args: argparse.Namespace) -> int:
@@ -574,7 +631,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     client = get_client()
 
     # Low-level API returns lightweight dicts
-    containers = client.api.containers(all=True, filters={"name": "cm-"})
+    containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
 
     instances = []
     for c in containers:
@@ -582,8 +639,6 @@ def cmd_list(args: argparse.Namespace) -> int:
         if not names:
             continue
         name = names[0].lstrip("/")
-        if not name.startswith("cm-"):
-            continue
         try:
             n = int(name.split("-")[1])
         except (IndexError, ValueError):
@@ -617,20 +672,19 @@ def cmd_complete(args: argparse.Namespace) -> int:
         if table:
             # Need Docker API to get status for table display
             client = get_client()
-            containers = client.api.containers(all=True, filters={"name": "cm-"})
+            containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
             instances = []
             for c in containers:
                 names = c.get("Names", [])
                 if not names:
                     continue
                 name = names[0].lstrip("/")
-                if name.startswith("cm-"):
-                    try:
-                        n = int(name.split("-")[1])
-                        status = c.get("State", "unknown")
-                        instances.append((n, name, status))
-                    except (IndexError, ValueError):
-                        pass
+                try:
+                    n = int(name.split("-")[1])
+                except (IndexError, ValueError):
+                    continue
+                status = c.get("State", "unknown")
+                instances.append((n, name, status))
             if instances:
                 print(f"{'#':<4} {'Container':<12} {'Status':<12}")
                 print("-" * 30)
@@ -652,23 +706,23 @@ def cmd_complete(args: argparse.Namespace) -> int:
         # Low-level Docker API
         client = get_client()
         containers = client.api.containers(
-            filters={"name": "cm-", "status": "running"}
+            filters={"label": "cm.managed=true", "status": "running"}
         )
         instances = []
         for c in containers:
             names = c.get("Names", [])
-            if names:
-                name = names[0].lstrip("/")
-                if name.startswith("cm-"):
-                    try:
-                        n = int(name.split("-")[1])
-                        if table:
-                            status = c.get("State", "running")
-                            instances.append((n, name, status))
-                        else:
-                            instances.append(n)
-                    except (IndexError, ValueError):
-                        pass
+            if not names:
+                continue
+            name = names[0].lstrip("/")
+            try:
+                n = int(name.split("-")[1])
+            except (IndexError, ValueError):
+                continue
+            if table:
+                status = c.get("State", "running")
+                instances.append((n, name, status))
+            else:
+                instances.append(n)
         if table:
             if instances:
                 print(f"{'#':<4} {'Container':<12} {'Status':<12}")
@@ -681,24 +735,24 @@ def cmd_complete(args: argparse.Namespace) -> int:
     elif mode == "dead":
         # Low-level Docker API - filter for non-running containers
         client = get_client()
-        containers = client.api.containers(all=True, filters={"name": "cm-"})
+        containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
         instances = []
         for c in containers:
             state = c.get("State", "")
             if state == "running":
                 continue
             names = c.get("Names", [])
-            if names:
-                name = names[0].lstrip("/")
-                if name.startswith("cm-"):
-                    try:
-                        n = int(name.split("-")[1])
-                        if table:
-                            instances.append((n, name, state))
-                        else:
-                            instances.append(n)
-                    except (IndexError, ValueError):
-                        pass
+            if not names:
+                continue
+            name = names[0].lstrip("/")
+            try:
+                n = int(name.split("-")[1])
+            except (IndexError, ValueError):
+                continue
+            if table:
+                instances.append((n, name, state))
+            else:
+                instances.append(n)
         if table:
             if instances:
                 print(f"{'#':<4} {'Container':<12} {'Status':<12}")
@@ -885,8 +939,8 @@ def cmd_kill(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_broadcast(args: argparse.Namespace) -> int:
-    """Toggle synchronized input for tmux panes."""
+def cmd_sync(args: argparse.Namespace) -> int:
+    """Toggle synchronize-panes for tmux session(s)."""
     state = "on" if args.state == "on" else "off"
 
     # If specific sessions provided, use those
@@ -898,7 +952,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
             else:
                 run_tmux(["setw", "-t", session, "synchronize-panes", state],
                          check=True)
-                print(f"Broadcast {state} for '{session}'")
+                print(f"synchronize-panes {state} for '{session}'")
         return 0
 
     # No sessions specified - find all cm sessions
@@ -917,7 +971,7 @@ def cmd_broadcast(args: argparse.Namespace) -> int:
 
     for session in cm_sessions:
         run_tmux(["setw", "-t", session, "synchronize-panes", state], check=True)
-        print(f"Broadcast {state} for '{session}'")
+        print(f"synchronize-panes {state} for '{session}'")
 
     return 0
 
@@ -935,7 +989,7 @@ _cm_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart rm ssh list logs pan win kill broadcast version"
+    local commands="start stop restart rm clean ssh list logs pan win kill sync version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -1017,7 +1071,7 @@ _cm_completions() {
             sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E '^cm(-|$)')
             COMPREPLY=($(compgen -W "$(_filter_used $sessions)" -- "$cur"))
             ;;
-        broadcast)
+        sync)
             if [[ $cword -eq 2 ]]; then
                 # First arg: on or off
                 COMPREPLY=($(compgen -W "on off" -- "$cur"))
@@ -1073,6 +1127,10 @@ def main() -> int:
                       help="Instance number(s): 1, 1-5, 1 3 5, or 'all'")
     p_rm.set_defaults(func=cmd_rm)
 
+    # clean
+    p_clean = subparsers.add_parser("clean", help="Remove orphaned workspace directories")
+    p_clean.set_defaults(func=cmd_clean)
+
     # ssh
     p_ssh = subparsers.add_parser("ssh", help="SSH into an instance")
     p_ssh.add_argument("instance", type=int, metavar="N",
@@ -1094,7 +1152,7 @@ def main() -> int:
     p_panes.add_argument("instances", nargs="+", metavar="N",
                          help="Instance number(s): 1, 1-5, or 1 3 5")
     p_panes.add_argument("--sync", "-s", action="store_true",
-                         help="Enable synchronized input to all panes")
+                         help="Enable synchronize-panes")
     p_panes.set_defaults(func=cmd_panes)
 
     # win
@@ -1102,7 +1160,7 @@ def main() -> int:
     p_win.add_argument("instances", nargs="+", metavar="N",
                        help="Instance number(s): 1, 1-5, or 1 3 5")
     p_win.add_argument("--sync", "-s", action="store_true",
-                       help="Enable synchronized input to all windows")
+                       help="Enable synchronize-panes")
     p_win.set_defaults(func=cmd_win)
 
     # kill
@@ -1111,13 +1169,13 @@ def main() -> int:
                         help="Session name(s) to kill (default: all, with confirmation)")
     p_kill.set_defaults(func=cmd_kill)
 
-    # broadcast
-    p_broadcast = subparsers.add_parser("broadcast", help="Toggle synchronized input to all panes")
-    p_broadcast.add_argument("state", choices=["on", "off"],
-                             help="Enable or disable broadcast mode")
-    p_broadcast.add_argument("sessions", nargs="*", metavar="SESSION",
-                             help="Session name(s) (default: all cm sessions)")
-    p_broadcast.set_defaults(func=cmd_broadcast)
+    # sync
+    p_sync = subparsers.add_parser("sync", help="Toggle synchronize-panes")
+    p_sync.add_argument("state", choices=["on", "off"],
+                        help="Enable or disable synchronize-panes")
+    p_sync.add_argument("sessions", nargs="*", metavar="SESSION",
+                        help="Session name(s) (default: all cm sessions)")
+    p_sync.set_defaults(func=cmd_sync)
 
     # autocomplete
     p_autocomplete = subparsers.add_parser("autocomplete", help="Print bash completion script")

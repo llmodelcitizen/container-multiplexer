@@ -1,8 +1,6 @@
 FROM debian:latest
 
-RUN apt-get update && apt-get upgrade -y
-
-RUN apt-get install -y \
+RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     build-essential \
     curl \
     gh \
@@ -22,17 +20,14 @@ RUN apt-get install -y \
 # Generate locale to prevent setlocale warnings from SSH clients
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 
-
 # Create "me" user with sudo access
 RUN useradd -m -s /bin/bash me && \
     echo "me ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Configure SSH
-RUN mkdir -p /var/run/sshd && \
-    sed -i 's/#PasswordAuthentication yes/PasswordAuthentication no/' /etc/ssh/sshd_config && \
-    sed -i 's/#PubkeyAuthentication yes/PubkeyAuthentication yes/' /etc/ssh/sshd_config && \
-    rm -f /etc/motd && \
-    sed -i 's/^session.*pam_motd/#&/' /etc/pam.d/sshd
+COPY sshd_cm.conf /etc/ssh/sshd_config.d/cm.conf
+RUN mkdir -p /var/run/sshd
+RUN rm -f /etc/motd
 
 # Setup SSH directory for me user
 RUN mkdir -p /home/me/.ssh && \

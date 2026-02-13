@@ -12,7 +12,7 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
 # Or work with many container instances at once
 ./cm start 1-12     # Start twelve container instances (001-012)
 ./cm pan 1-6        # Tmux session with split panes, each SSH'd
-./cm broadcast on   # Send keystrokes to all panes in a session
+./cm sync on        # Enable synchronize-panes for cm sessions
 ```
 
 ## Setup
@@ -66,23 +66,24 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
 Use `-h` for each argument to explore more
 ```
 cm -h
-usage: cm [-h] [--version] {start,stop,restart,rm,ssh,list,logs,pan,win,kill,broadcast,autocomplete,version} ...
+usage: cm [-h] [--version] {start,stop,restart,rm,clean,ssh,list,logs,pan,win,kill,sync,autocomplete,version} ...
 
 Manage CM instances
 
 positional arguments:
-  {start,stop,restart,rm,ssh,list,logs,pan,win,kill,broadcast,autocomplete,version}
+  {start,stop,restart,rm,clean,ssh,list,logs,pan,win,kill,sync,autocomplete,version}
     start               Start instance(s)
     stop                Stop instance(s)
     restart             Restart instance(s)
     rm                  Remove dead (non-running) container(s)
+    clean               Remove orphaned workspace directories
     ssh                 SSH into an instance
     list                List all instances
     logs                Show logs for an instance
     pan                 Open tmux session with SSH panes
     win                 Open tmux session with SSH windows
     kill                Kill cm tmux session(s)
-    broadcast           Toggle synchronized input to all panes
+    sync                Toggle synchronize-panes
     autocomplete        Print bash completion script
     version             Print version
 
@@ -101,6 +102,7 @@ cm stop all         # Stop all running instances
 cm restart all      # Restart all running instances
 cm rm 1             # Remove a stopped container
 cm rm all           # Remove all stopped containers
+cm clean            # Remove orphaned workspace directories
 
 # Connect
 cm list             # List all instances with status
@@ -109,10 +111,10 @@ cm logs 1           # View container logs ala "docker logs"
 
 # Tmux sessions (for working with many container instances)
 cm pan 1-9          # Use split panes, each SSH'd to an instance
-cm pan 1-9 --sync   # Same, with synchronized input (broadcast on)
+cm pan 1-9 --sync   # Same, with synchronize-panes enabled
 cm win 1-2          # Use tmux windows instead of panes
 cm kill             # Kill sessions (ALL by default, with confirmation)
-cm broadcast on     # Enable synchronized input across sessions
+cm sync on          # Enable synchronize-panes for cm sessions
 
 # Version
 cm version          # Print version (from git tags)
