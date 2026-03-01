@@ -521,8 +521,8 @@ def cmd_rm(args: argparse.Namespace) -> int:
     remaining = [get_instance_config(n)["workspace"] for n in instances
                  if get_instance_config(n)["workspace"].exists()]
     if remaining:
-        dirs = ", ".join(d.name + "/" for d in remaining)
-        print(f"Note: workspace(s) remain on disk: {dirs}")
+        dirs = "\n  ".join(str(d) for d in remaining)
+        print(f"Note: workspace(s) remain on disk (use 'cm clean' to remove):\n  {dirs}")
 
     return 0 if success else 1
 
