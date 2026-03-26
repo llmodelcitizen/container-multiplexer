@@ -6,6 +6,35 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 
+# --- Uninstall mode ---
+if [[ "$1" == "--uninstall" ]]; then
+    echo "CM Uninstaller"
+    echo "=============="
+    echo
+    read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
+    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+    INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+
+    removed=0
+    for f in cm workspaces authorized_keys; do
+        target="$INSTALL_DIR/$f"
+        if [[ -e "$target" || -L "$target" ]]; then
+            rm -f "$target"
+            echo "Removed $target"
+            ((removed++))
+        fi
+    done
+
+    if [[ $removed -eq 0 ]]; then
+        echo "Nothing to remove in $INSTALL_DIR"
+    else
+        echo
+        echo "Uninstalled successfully!"
+    fi
+    exit 0
+fi
+
+# --- Install mode ---
 echo "CM Installer"
 echo "============"
 echo
