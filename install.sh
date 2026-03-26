@@ -36,7 +36,11 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
     CM_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)
     if [[ -n "$CM_VERSION" ]]; then
         CM_VERSION_SAFE=$(printf '%s' "$CM_VERSION" | sed 's/[&/\]/\\&/g')
-        sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
+        if [[ "$OSTYPE" == darwin* ]]; then
+            sed -i '' "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
+        else
+            sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
+        fi
         echo "Version: $CM_VERSION"
     fi
 fi
