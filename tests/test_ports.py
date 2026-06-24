@@ -208,6 +208,25 @@ class PortLookupTests(unittest.TestCase):
         port_arg_index = raised.exception.args[0].index("-p") + 1
         self.assertEqual(raised.exception.args[0][port_arg_index], "2401")
 
+    def test_port_allocation_error_matches_docker_desktop_message(self):
+        error = FakeAPIError(
+            "500 Server Error: ports are not available: exposing port TCP "
+            "127.0.0.1:2201 -> 127.0.0.1:0: listen tcp4 127.0.0.1:2201: "
+            "bind: address already in use"
+        )
+
+        self.assertTrue(cm.is_port_allocation_error(error))
+
+    def test_port_allocation_error_matches_classic_message(self):
+        error = FakeAPIError("port is already allocated")
+
+        self.assertTrue(cm.is_port_allocation_error(error))
+
+    def test_port_allocation_error_rejects_unrelated_api_error(self):
+        error = FakeAPIError("image not found")
+
+        self.assertFalse(cm.is_port_allocation_error(error))
+
 
 if __name__ == "__main__":
     unittest.main()

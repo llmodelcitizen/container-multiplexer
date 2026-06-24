@@ -207,6 +207,19 @@ def get_list_ssh_port(client: docker.DockerClient, container_summary: dict,
     return get_container_ssh_port(container, fallback_port)
 
 
+def is_port_allocation_error(error: Exception) -> bool:
+    """Return True if Docker failed because the requested host port is busy."""
+    message = str(error).lower()
+    return (
+        "port is already allocated" in message
+        or "bind: address already in use" in message
+        or (
+            "ports are not available" in message
+            and "address already in use" in message
+        )
+    )
+
+
 def parse_instances(args: list[str]) -> list[int]:
     """Parse instance arguments into a list of instance numbers.
 
@@ -361,7 +374,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
             )
             return (port, None)
         except docker_sdk.errors.APIError as e:
-            if "port is already allocated" in str(e):
+            if is_port_allocation_error(e):
                 # Remove the failed container before retrying with new port
                 container = get_container(client, cfg["container"])
                 if container:
