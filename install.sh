@@ -58,7 +58,7 @@ if [[ "$1" == "--uninstall" ]]; then
     INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
     removed=0
-    for f in cm workspaces authorized_keys; do
+    for f in cm cm.py workspaces authorized_keys; do
         target="$INSTALL_DIR/$f"
         if [[ -e "$target" || -L "$target" ]]; then
             rm -f "$target"
@@ -66,6 +66,13 @@ if [[ "$1" == "--uninstall" ]]; then
             ((removed++))
         fi
     done
+
+    venv="$INSTALL_DIR/.cm-venv"
+    if [[ -e "$venv" || -L "$venv" ]]; then
+        rm -rf "$venv"
+        echo "Removed $venv"
+        ((removed++))
+    fi
 
     if [[ $removed -eq 0 ]]; then
         echo "Nothing to remove in $INSTALL_DIR"
@@ -81,8 +88,9 @@ echo "CM Installer"
 echo "============"
 echo
 echo "This will:"
-echo "  1. Copy 'cm' to your chosen directory"
-echo "  2. Create symlinks for 'workspaces/' (and 'authorized_keys' if present)"
+echo "  1. Create a private Python virtual environment with the Docker SDK"
+echo "  2. Install a 'cm' wrapper and 'cm.py' script to your chosen directory"
+echo "  3. Create symlinks for 'workspaces/' (and 'authorized_keys' if present)"
 echo
 read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
@@ -96,11 +104,36 @@ if [[ ! -d "$INSTALL_DIR" ]]; then
     mkdir -p "$INSTALL_DIR"
 fi
 
-# Copy cm script
-echo "Copying cm to $INSTALL_DIR/"
-rm -f "$INSTALL_DIR/cm"
-cp "$SCRIPT_DIR/cm" "$INSTALL_DIR/cm"
-chmod +x "$INSTALL_DIR/cm"
+VENV_DIR="$INSTALL_DIR/.cm-venv"
+CM_SCRIPT="$INSTALL_DIR/cm.py"
+CM_WRAPPER="$INSTALL_DIR/cm"
+
+PYTHON="${CM_PYTHON:-python3}"
+if ! command -v "$PYTHON" >/dev/null 2>&1; then
+    echo "Error: $PYTHON not found. Install Python 3 or set CM_PYTHON=/path/to/python3."
+    exit 1
+fi
+
+echo "Creating Python virtual environment at $VENV_DIR"
+"$PYTHON" -m venv "$VENV_DIR"
+
+echo "Installing Python Docker SDK"
+"$VENV_DIR/bin/python" -m pip install --upgrade docker
+
+# Copy cm script and install a wrapper that always uses the managed venv.
+echo "Copying cm.py to $INSTALL_DIR/"
+rm -f "$CM_SCRIPT"
+cp "$SCRIPT_DIR/cm" "$CM_SCRIPT"
+chmod +x "$CM_SCRIPT"
+
+echo "Writing cm wrapper to $CM_WRAPPER"
+rm -f "$CM_WRAPPER"
+cat > "$CM_WRAPPER" <<'EOF'
+#!/bin/sh
+SCRIPT_DIR=$(CDPATH= cd "$(dirname "$0")" && pwd)
+exec "$SCRIPT_DIR/.cm-venv/bin/python" "$SCRIPT_DIR/cm.py" "$@"
+EOF
+chmod +x "$CM_WRAPPER"
 
 # Inject version from git
 if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
@@ -108,9 +141,9 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
     if [[ -n "$CM_VERSION" ]]; then
         CM_VERSION_SAFE=$(printf '%s' "$CM_VERSION" | sed 's/[&/\]/\\&/g')
         if [[ "$OSTYPE" == darwin* ]]; then
-            sed -i '' "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
+            sed -i '' "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
         else
-            sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$INSTALL_DIR/cm"
+            sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
         fi
         echo "Version: $CM_VERSION"
     fi

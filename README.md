@@ -34,34 +34,23 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
    brew install tmux python
    ```
 
-3. Install the Python Docker SDK for the same interpreter that runs `cm`. Use `python3 -m pip` rather than `pip3` so the package is installed for that `python3`:
-   ```bash
-   python3 -m pip install --user docker
-   python3 -c "import docker; print(docker.__version__)"
-   ```
-   If your Python install requires a virtual environment, activate that environment before installing the SDK and before running `cm`.
-
-4. macOS defaults to zsh. If you install `cm` into `~/.local/bin`, make sure zsh can find it:
+3. macOS defaults to zsh. If you install `cm` into `~/.local/bin`, make sure zsh can find it:
    ```zsh
    mkdir -p ~/.local/bin
    grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.zshrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
    source ~/.zshrc
    ```
 
-5. Install `cm` into `~/.local/bin` or another directory on your `PATH`. Re-run this after a `git pull` to update the installed copy:
+4. Install `cm` into `~/.local/bin` or another directory on your `PATH`. The installer creates a private `.cm-venv` and installs the Python Docker SDK there, so the installed `cm` command does not depend on your global Python packages. Re-run this after a `git pull` to update the installed copy:
    ```bash
    ./install.sh
    ```
 
 ### Linux
 
-1. Install Docker, `tmux`, and the Python Docker SDK. On Debian/Ubuntu:
+1. Install Docker, `tmux`, and Python 3. On Debian/Ubuntu:
    ```bash
-   sudo apt install docker.io tmux python3-docker
-   ```
-   If your distribution does not package the SDK, install it for the interpreter that runs `cm`:
-   ```bash
-   python3 -m pip install --user docker
+   sudo apt install docker.io tmux python3 python3-venv
    ```
 
 2. Start Docker and verify the engine is reachable:
@@ -69,10 +58,17 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
    docker info
    ```
 
-3. Optionally install `cm` into `~/.local/bin` or another directory on your `PATH`. Re-run this after a `git pull` to update the installed copy:
+3. Optionally install `cm` into `~/.local/bin` or another directory on your `PATH`. The installer creates a private `.cm-venv` and installs the Python Docker SDK there. Re-run this after a `git pull` to update the installed copy:
    ```bash
    ./install.sh
    ```
+
+If you run `./cm` directly from the source checkout instead of using `./install.sh`, install the Python Docker SDK for the `python3` that runs it:
+
+```bash
+python3 -m pip install --user docker
+python3 -c "import docker; print(docker.__version__)"
+```
 
 ### SSH keys
 
