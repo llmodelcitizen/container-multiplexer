@@ -17,36 +17,95 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
 
 ## Setup
 
-1. **SSH keys**: `cm` mounts your `~/.ssh/authorized_keys` (public keys only) into each container automatically. No extra setup needed if you already have one.
+### macOS
 
-   To use a **different** key set for cm containers, place an `authorized_keys` file in the project root — this overrides `~/.ssh/authorized_keys`.
-
-2. Install Python Docker library (requires Python 3.9+; `cm` does not use any docker subprocess):
+1. Install and start Docker Desktop. Homebrew users can install it with:
    ```bash
-   sudo apt install python3-docker # debian system package
-   pip3 install docker             # via pip (e.g. macOS)
+   brew install --cask docker
+   open -a Docker
    ```
-
-3. Add to your `~/.ssh/config`:
-   ```
-   Host cm
-       HostName localhost
-       User me
-       IdentityFile ~/.ssh/id_ed25519
-   ```
-
-4. Set up bash completion:
+   Wait for Docker Desktop to finish starting, then verify the engine is reachable:
    ```bash
-   ./cm autocomplete >> ~/.bashrc
-   source ~/.bashrc
+   docker info
    ```
 
-5. Optionally, add `cm` to PATH. Copies the python script to `~/.local/bin/` (or a specified directory) with symlinks for `authorized_keys` and `workspaces/`. Re-run after a `git pull` to update.
+2. Install `tmux` and Python 3:
+   ```bash
+   brew install tmux python
+   ```
+
+3. Install the Python Docker SDK for the same interpreter that runs `cm`. Use `python3 -m pip` rather than `pip3` so the package is installed for that `python3`:
+   ```bash
+   python3 -m pip install --user docker
+   python3 -c "import docker; print(docker.__version__)"
+   ```
+   If your Python install requires a virtual environment, activate that environment before installing the SDK and before running `cm`.
+
+4. macOS defaults to zsh. If you install `cm` into `~/.local/bin`, make sure zsh can find it:
+   ```zsh
+   mkdir -p ~/.local/bin
+   grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' ~/.zshrc || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+   source ~/.zshrc
+   ```
+
+5. Install `cm` into `~/.local/bin` or another directory on your `PATH`. Re-run this after a `git pull` to update the installed copy:
    ```bash
    ./install.sh
    ```
 
-6. Build the base image:
+### Linux
+
+1. Install Docker, `tmux`, and the Python Docker SDK. On Debian/Ubuntu:
+   ```bash
+   sudo apt install docker.io tmux python3-docker
+   ```
+   If your distribution does not package the SDK, install it for the interpreter that runs `cm`:
+   ```bash
+   python3 -m pip install --user docker
+   ```
+
+2. Start Docker and verify the engine is reachable:
+   ```bash
+   docker info
+   ```
+
+3. Optionally install `cm` into `~/.local/bin` or another directory on your `PATH`. Re-run this after a `git pull` to update the installed copy:
+   ```bash
+   ./install.sh
+   ```
+
+### SSH keys
+
+`cm` uses your `~/.ssh/authorized_keys` (public keys only) to install SSH access inside each container automatically. No extra setup is needed if you already have one.
+
+To use a different key set for cm containers, place an `authorized_keys` file in the project root; this overrides `~/.ssh/authorized_keys`.
+
+`cm ssh N` connects directly as `me@127.0.0.1` on the instance's published SSH port; no `Host cm` entry is required in `~/.ssh/config`. To force a specific private key, use `cm ssh -i ~/.ssh/id_ed25519 N` or set `CM_SSH_IDENTITY=/path/to/key`.
+
+### Shell completion
+
+`cm autocomplete` currently prints bash completion only. It calls `_init_completion`, so bash users must install `bash-completion` before sourcing it. zsh completion is not implemented; zsh users should skip this step.
+
+Linux bash:
+```bash
+sudo apt install bash-completion
+./cm autocomplete >> ~/.bashrc
+source ~/.bashrc
+```
+
+macOS bash:
+```bash
+brew install bash-completion@2
+{
+  echo '[[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"'
+  ./cm autocomplete
+} >> ~/.bash_profile
+source ~/.bash_profile
+```
+
+### Build images
+
+1. Build the base image:
    ```bash
    # Build bootstrap image
    docker build --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
@@ -57,10 +116,29 @@ Manage multiple Docker containers (hundreds of them, if you want) with SSH acces
    docker rm cm-mod
    ```
 
-7. Build runtime image:
+2. Build the runtime image:
    ```bash
    docker build -t cm .
    ```
+
+### Apple Silicon image architecture
+
+On Apple Silicon Macs, Docker builds native `linux/arm64` images by default. This is the fastest local path, and the setup commands above work as-is for native arm64 images:
+
+```bash
+docker build --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
+docker build -t cm .
+```
+
+If you specifically need Intel/AMD64 images, add `--platform linux/amd64` consistently when building the bootstrap image, running the temporary image you commit, and building the runtime image:
+
+```bash
+docker build --platform linux/amd64 --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
+docker run --platform linux/amd64 -it --user me --name cm-mod cm-bootstrap:latest /bin/bash
+docker commit cm-mod cm-base:latest
+docker rm cm-mod
+docker build --platform linux/amd64 -t cm .
+```
 
 ## Usage
 Use `-h` for each argument to explore more
@@ -107,6 +185,7 @@ cm clean            # Remove orphaned workspace directories
 # Connect
 cm list             # List all instances with status
 cm ssh 1            # SSH into an individual instance
+cm ssh -i ~/.ssh/id_ed25519 1  # SSH with a specific private key
 cm logs 1           # View container logs ala "docker logs"
 
 # Tmux sessions (for working with many container instances)
@@ -143,6 +222,9 @@ cm-bootstrap:latest  →  cm-base:latest  →  cm:latest
 # After changing Dockerfile.base (rare)
 docker build --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
 # Then commit to cm-base:latest
+
+# On Apple Silicon, add --platform linux/amd64 to both builds only if you
+# need amd64 images instead of the native arm64 default.
 
 # After changing Dockerfile or entrypoint.sh (fast, uses cm-base cache)
 docker build -t cm .

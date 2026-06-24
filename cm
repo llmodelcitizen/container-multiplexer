@@ -4,28 +4,35 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 import subprocess
 import sys
 import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import shutil
 import warnings
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
-try:
+if TYPE_CHECKING:
     import docker
-    from docker.errors import NotFound, APIError
-except ImportError:
-    sys.exit("Error: Python 'docker' package not installed. See README for setup instructions.")
+
+_DOCKER_IMPORT_ERROR = (
+    "Error: Python 'docker' package not installed. See README for setup instructions."
+)
+_docker_sdk: Any | None = None
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 BASE_PORT = 2200
+SSH_CONTAINER_PORT = 22
+SSH_CONTAINER_PORT_PROTO = f"{SSH_CONTAINER_PORT}/tcp"
 MAX_INSTANCE = 499
 VERSION = "dev"
 IMAGE_NAME = "cm"
 WORKSPACES_DIR = SCRIPT_DIR / "workspaces"
+AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
 
 # Ensure workspaces directory exists (handles symlink-to-nonexistent case)
 if WORKSPACES_DIR.is_symlink():
@@ -33,6 +40,20 @@ if WORKSPACES_DIR.is_symlink():
     Path(os.readlink(WORKSPACES_DIR)).mkdir(exist_ok=True)
 else:
     WORKSPACES_DIR.mkdir(exist_ok=True)
+
+
+def get_docker_sdk() -> Any:
+    """Load the Docker SDK only when a Docker-backed command needs it."""
+    global _docker_sdk
+
+    if _docker_sdk is None:
+        try:
+            import docker as docker_sdk
+        except ImportError:
+            sys.exit(_DOCKER_IMPORT_ERROR)
+        _docker_sdk = docker_sdk
+
+    return _docker_sdk
 
 
 def run_tmux(args: list[str], **kwargs) -> subprocess.CompletedProcess:
@@ -59,9 +80,10 @@ def exec_tmux(args: list[str]) -> None:
 
 def get_client() -> docker.DockerClient:
     """Get Docker client."""
+    docker_sdk = get_docker_sdk()
     try:
-        return docker.from_env()
-    except docker.errors.DockerException:
+        return docker_sdk.from_env()
+    except docker_sdk.errors.DockerException:
         sys.exit("Error: Cannot connect to Docker. Is the Docker daemon running?")
 
 
@@ -76,10 +98,113 @@ def get_instance_config(n: int) -> dict:
 
 def get_container(client: docker.DockerClient, name: str):
     """Get a container by name, or None if not found."""
+    docker_sdk = get_docker_sdk()
     try:
         return client.containers.get(name)
-    except NotFound:
+    except docker_sdk.errors.NotFound:
         return None
+
+
+def _parse_port(port: object) -> int | None:
+    """Parse a Docker port value into an int."""
+    if port is None:
+        return None
+    try:
+        parsed = int(str(port))
+    except (TypeError, ValueError):
+        return None
+    if parsed < 1 or parsed > 65535:
+        return None
+    return parsed
+
+
+def get_ssh_port_from_summary(container_summary: dict) -> int | None:
+    """Get the published SSH port from a Docker container summary."""
+    ports = container_summary.get("Ports", [])
+    if not isinstance(ports, list):
+        return None
+
+    for port_info in ports:
+        if not isinstance(port_info, dict):
+            continue
+        if _parse_port(port_info.get("PrivatePort")) != SSH_CONTAINER_PORT:
+            continue
+        if port_info.get("Type", "tcp") != "tcp":
+            continue
+        public_port = _parse_port(port_info.get("PublicPort"))
+        if public_port is not None:
+            return public_port
+
+    return None
+
+
+def _get_ssh_port_from_bindings(port_bindings: object) -> int | None:
+    """Get the published SSH port from Docker inspect-style port bindings."""
+    if not isinstance(port_bindings, dict):
+        return None
+
+    bindings = port_bindings.get(SSH_CONTAINER_PORT_PROTO)
+    if isinstance(bindings, dict):
+        bindings = [bindings]
+    if not isinstance(bindings, list):
+        return None
+
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        host_port = _parse_port(binding.get("HostPort"))
+        if host_port is not None:
+            return host_port
+
+    return None
+
+
+def get_ssh_port_from_attrs(attrs: object) -> int | None:
+    """Get the published SSH port from Docker inspect attrs."""
+    if not isinstance(attrs, dict):
+        return None
+
+    network_settings = attrs.get("NetworkSettings", {})
+    if isinstance(network_settings, dict):
+        port = _get_ssh_port_from_bindings(network_settings.get("Ports", {}))
+        if port is not None:
+            return port
+
+    host_config = attrs.get("HostConfig", {})
+    if isinstance(host_config, dict):
+        return _get_ssh_port_from_bindings(host_config.get("PortBindings", {}))
+
+    return None
+
+
+def get_container_ssh_port(container, fallback_port: int | None = None) -> int | None:
+    """Get a container's published SSH port, falling back when unavailable."""
+    port = get_ssh_port_from_attrs(getattr(container, "attrs", None))
+    return fallback_port if port is None else port
+
+
+def get_list_ssh_port(client: docker.DockerClient, container_summary: dict,
+                      fallback_port: int | None = None) -> int | None:
+    """Get the SSH port for list output from summary, inspect, or fallback."""
+    port = get_ssh_port_from_summary(container_summary)
+    if port is not None:
+        return port
+
+    names = container_summary.get("Names", [])
+    if not names:
+        return fallback_port
+
+    name = names[0].lstrip("/")
+    docker_sdk = get_docker_sdk()
+    try:
+        container = get_container(client, name)
+    except docker_sdk.errors.APIError:
+        return fallback_port
+
+    if not container:
+        return fallback_port
+
+    return get_container_ssh_port(container, fallback_port)
 
 
 def parse_instances(args: list[str]) -> list[int]:
@@ -174,20 +299,33 @@ def get_next_session_name() -> tuple[str, bool]:
 
 
 def get_authorized_keys_path() -> Path:
-    """Return the authorized_keys file to mount into containers.
+    """Return the authorized_keys file to stage into containers.
 
     Uses the project-root file as an override if it exists, otherwise
     falls back to ~/.ssh/authorized_keys.
     """
     local = SCRIPT_DIR / "authorized_keys"
     if local.exists():
-        return local
-    home = Path.home() / ".ssh" / "authorized_keys"
-    if home.exists():
-        return home
-    print("Error: No authorized_keys found. Place one in the project root or ensure ~/.ssh/authorized_keys exists.",
-          file=sys.stderr)
-    sys.exit(1)
+        path = local
+    else:
+        path = Path.home() / ".ssh" / "authorized_keys"
+        if not path.exists():
+            print("Error: No authorized_keys found. Place one in the project root or ensure ~/.ssh/authorized_keys exists.",
+                  file=sys.stderr)
+            sys.exit(1)
+
+    if not path.is_file():
+        print(f"Error: authorized_keys source is not a file: {path}", file=sys.stderr)
+        sys.exit(1)
+    try:
+        if path.stat().st_size == 0:
+            print(f"Error: authorized_keys source is empty: {path}", file=sys.stderr)
+            sys.exit(1)
+    except OSError as e:
+        print(f"Error: Cannot read authorized_keys source {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    return path
 
 
 def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple[int | None, str | None]:
@@ -198,6 +336,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
     port = cfg["port"]
     max_port_attempts = 100
     auth_keys = get_authorized_keys_path()
+    docker_sdk = get_docker_sdk()
 
     for attempt in range(max_port_attempts):
         try:
@@ -209,7 +348,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
                 ports={"22/tcp": ("127.0.0.1", port)},
                 volumes={
                     str(auth_keys): {
-                        "bind": "/home/me/.ssh/authorized_keys",
+                        "bind": AUTHORIZED_KEYS_MOUNT,
                         "mode": "ro",
                     },
                     str(cfg["workspace"]): {
@@ -221,7 +360,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
                 labels={"cm.managed": "true"},
             )
             return (port, None)
-        except APIError as e:
+        except docker_sdk.errors.APIError as e:
             if "port is already allocated" in str(e):
                 # Remove the failed container before retrying with new port
                 container = get_container(client, cfg["container"])
@@ -237,6 +376,7 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
 def start_instance(client: docker.DockerClient, n: int) -> bool:
     """Start a single instance. Returns True on success."""
     cfg = get_instance_config(n)
+    docker_sdk = get_docker_sdk()
 
     # Create workspace if needed
     cfg["workspace"].mkdir(parents=True, exist_ok=True)
@@ -255,7 +395,7 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
     # Check if image exists
     try:
         client.images.get(IMAGE_NAME)
-    except NotFound:
+    except docker_sdk.errors.NotFound:
         print(f"Image '{IMAGE_NAME}' not found. Build it first:")
         print(f"  docker build -t {IMAGE_NAME} .")
         return False
@@ -322,7 +462,8 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
 
 def _start_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to start an instance in a thread."""
-    client = docker.from_env()
+    client = get_client()
+    docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
         cfg["workspace"].mkdir(parents=True, exist_ok=True)
@@ -337,7 +478,7 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
 
         try:
             client.images.get(IMAGE_NAME)
-        except NotFound:
+        except docker_sdk.errors.NotFound:
             return (n, False, f"Image '{IMAGE_NAME}' not found")
 
         port, error = try_start_container(client, n, cfg)
@@ -353,7 +494,7 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
 
 def _stop_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to stop an instance in a thread."""
-    client = docker.from_env()
+    client = get_client()
     try:
         cfg = get_instance_config(n)
         container = get_container(client, cfg["container"])
@@ -369,7 +510,8 @@ def _stop_instance_worker(n: int) -> tuple[int, bool, str]:
 
 def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to restart an instance in a thread."""
-    client = docker.from_env()
+    client = get_client()
+    docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
         cfg["workspace"].mkdir(parents=True, exist_ok=True)
@@ -384,7 +526,7 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
 
         try:
             client.images.get(IMAGE_NAME)
-        except NotFound:
+        except docker_sdk.errors.NotFound:
             return (n, False, f"Image '{IMAGE_NAME}' not found")
 
         port, error = try_start_container(client, n, cfg)
@@ -400,7 +542,7 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
 
 def _rm_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to remove a dead container in a thread."""
-    client = docker.from_env()
+    client = get_client()
     try:
         cfg = get_instance_config(n)
         container = get_container(client, cfg["container"])
@@ -590,15 +732,27 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         print(f"Instance {args.instance} is not running")
         return 1
 
+    port = get_container_ssh_port(container, cfg["port"])
+    target = "me@127.0.0.1"
+    identity = getattr(args, "identity", None) or os.environ.get("CM_SSH_IDENTITY")
+    ssh_args = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "SetEnv=LANG=en_US.UTF-8",
+        "-o", "SendEnv=-LANG -LC_*",
+        "-p", str(port),
+    ]
+    if identity:
+        ssh_args.extend([
+            "-i", os.path.expanduser(identity),
+            "-o", "IdentitiesOnly=yes",
+        ])
+    ssh_args.append(target)
+
     try:
-        os.execlp("ssh", "ssh",
-                  "-o", "StrictHostKeyChecking=no",
-                  "-o", "UserKnownHostsFile=/dev/null",
-                  "-o", "LogLevel=ERROR",
-                  "-o", "SetEnv=LANG=en_US.UTF-8",
-                  "-o", "SendEnv=-LANG -LC_*",
-                  "-p", str(cfg["port"]),
-                  "cm")
+        os.execlp("ssh", *ssh_args)
     except FileNotFoundError:
         sys.exit("Error: ssh is not installed.")
 
@@ -647,7 +801,7 @@ def cmd_list(args: argparse.Namespace) -> int:
         state = c.get("State", "unknown")
         status = c.get("Status", "")
         uptime, health = parse_status(status)
-        port = BASE_PORT + n
+        port = get_list_ssh_port(client, c, BASE_PORT + n)
         instances.append((n, name, state, uptime, health, port))
 
     if not instances:
@@ -810,7 +964,7 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
     # Create new session with first instance
     first = instances[0]
-    cm_path = SCRIPT_DIR / "cm"
+    cm_path = shlex.quote(str(SCRIPT_DIR / "cm"))
     pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
     run_tmux(["new-session", "-d", "-s", session_name, "-n", session_name,
                     pane_cmd], check=True)
@@ -864,7 +1018,7 @@ def cmd_win(args: argparse.Namespace) -> int:
 
     # Create new session with first window
     first = instances[0]
-    cm_path = SCRIPT_DIR / "cm"
+    cm_path = shlex.quote(str(SCRIPT_DIR / "cm"))
     window_name = f"{session_name}-w{first}"
     pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
     run_tmux(["new-session", "-d", "-s", session_name,
@@ -1133,6 +1287,8 @@ def main() -> int:
 
     # ssh
     p_ssh = subparsers.add_parser("ssh", help="SSH into an instance")
+    p_ssh.add_argument("-i", "--identity", metavar="PATH",
+                       help="SSH private key to use (or set CM_SSH_IDENTITY)")
     p_ssh.add_argument("instance", type=int, metavar="N",
                        help="Instance number")
     p_ssh.set_defaults(func=cmd_ssh)

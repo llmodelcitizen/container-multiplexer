@@ -1,6 +1,6 @@
-FROM debian:latest
+FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get upgrade -y && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     gh \
@@ -15,7 +15,8 @@ RUN apt-get update && apt-get upgrade -y && apt-get install -y \
     python3-venv \
     sudo \
     vim \
-    wget
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
 # Generate locale to prevent setlocale warnings from SSH clients
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen

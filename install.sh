@@ -6,6 +6,48 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 
+path_export_value() {
+    local dir="$1"
+
+    if [[ "$dir" == "$HOME" ]]; then
+        printf '$HOME'
+    elif [[ "$dir" == "$HOME/"* ]]; then
+        printf '$HOME/%s' "${dir#"$HOME/"}"
+    else
+        printf '%s' "$dir"
+    fi
+}
+
+print_path_guidance() {
+    local dir="$1"
+    local shell_name
+    local rc_file
+    local path_value
+
+    shell_name="$(basename "${SHELL:-sh}")"
+    path_value="$(path_export_value "$dir")"
+
+    echo "Note: $dir is not in your PATH."
+    echo "Add it with:"
+
+    if [[ "${ZSH_VERSION:-}" || "$shell_name" == "zsh" ]]; then
+        rc_file="$HOME/.zshrc"
+    elif [[ "$shell_name" == "bash" ]]; then
+        if [[ "$OSTYPE" == darwin* ]]; then
+            rc_file="$HOME/.bash_profile"
+        else
+            rc_file="$HOME/.bashrc"
+        fi
+    else
+        echo "  export PATH=\"$path_value:\$PATH\""
+        echo "Add that line to your shell startup file."
+        return
+    fi
+
+    echo "  echo 'export PATH=\"$path_value:\$PATH\"' >> \"$rc_file\""
+    echo "  source \"$rc_file\""
+}
+
 # --- Uninstall mode ---
 if [[ "$1" == "--uninstall" ]]; then
     echo "CM Uninstaller"
@@ -101,7 +143,5 @@ echo
 echo "Installed successfully!"
 echo
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
-    echo "Note: $INSTALL_DIR is not in your PATH."
-    echo "Add it with:"
-    echo "  echo 'export PATH=\"$INSTALL_DIR:\$PATH\"' >> ~/.bashrc"
+    print_path_guidance "$INSTALL_DIR"
 fi
