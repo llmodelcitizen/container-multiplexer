@@ -98,9 +98,19 @@ Finally, build the runtime image. You can also run this command after changing `
 docker build -t cm .
 ```
 
-### Quick Base Updates
+### Quicker Image Build
 
-Once `cm-base:latest` exists, you can use this faster path for ad-hoc changes. It updates the base image directly, then rebuilds the thin runtime image, usually avoiding the slower Debian/package rebuild.
+If you do not need to customize the base image interactively, you can skip the temporary container and tag the bootstrap image as the base. This also omits `--pull` and `--no-cache` for faster local rebuilds:
+
+```bash
+docker build -t cm-bootstrap:latest -f Dockerfile.base .
+docker tag cm-bootstrap:latest cm-base:latest
+docker build -t cm .
+```
+
+### Base Updates
+
+Once `cm-base:latest` exists, you can use this path for ad-hoc changes. It updates the base image directly, then rebuilds the thin runtime image, usually avoiding the slower Debian/package rebuild.
 
 Start a temporary container from the current base image:
 
@@ -126,14 +136,14 @@ Rebuild `cm` so new instances use the updated base:
 docker build -t cm .
 ```
 
-Alternatively, if the useful change already exists in a running `cm` instance, you can commit that instance instead. This captures the container filesystem, not the mounted workspace at `/home/me/workspace`. Reset the runtime entrypoint while saving it as the base image:
+### Quicker Base Updates
+
+If the useful change already exists in a running `cm` instance, you can commit that instance instead. This captures the container filesystem, not the mounted workspace at `/home/me/workspace`. Reset the runtime entrypoint while saving it as the base image:
 
 ```bash
 docker commit --change 'ENTRYPOINT []' cm-001 cm-base:latest
 docker build -t cm .
 ```
-
-Remember that image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean` while no container exists for that instance.
 
 ### Apple Silicon
 
@@ -163,6 +173,11 @@ Finally, build the runtime image. You can also run this command after changing `
 ```
 docker build --platform linux/amd64 -t cm .
 ```
+
+### Applying Image Changes
+
+Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace
+remains unless you run `cm clean` while no container exists for that instance.
 
 ## SSH Keys
 
