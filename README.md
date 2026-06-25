@@ -136,7 +136,7 @@ Rebuild `cm` so new instances use the updated base:
 docker build -t cm .
 ```
 
-### Quicker Base Updates
+### Quicker Base Updates (Commit a Running Instance)
 
 If the useful change already exists in a running `cm` instance, you can commit that instance instead. This captures the container filesystem, not the mounted workspace at `/home/me/workspace`. Reset the runtime entrypoint while saving it as the base image:
 
@@ -176,8 +176,7 @@ docker build --platform linux/amd64 -t cm .
 
 ### Applying Image Changes
 
-Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace
-remains unless you run `cm clean` while no container exists for that instance.
+Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean` while no container exists for that instance.
 
 ## SSH Keys
 
