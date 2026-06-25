@@ -18,6 +18,8 @@ cm pan 1-6        # Open tmux panes, each SSH'd to a running instance
 cm sync on        # Enable synchronize-panes for cm tmux sessions
 ```
 
+![Demo](demo.gif)
+
 ## Setup
 
 Verify Docker is installed and running:
