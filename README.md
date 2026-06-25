@@ -38,7 +38,7 @@ Or:
 brew install tmux python
 ```
 
-Create a dedicated SSH key for `cm`:
+Create a dedicated SSH key:
 
 ```bash
 ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519
@@ -51,14 +51,7 @@ Install `cm`:
 ./install.sh
 ```
 
-The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. The source script is `cm.py`; after installation, the command remains `cm`. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
-
-Next, build the Docker image using [Fresh Image Build](#fresh-image-build). Once the image exists, start an instance and SSH into it:
-
-```bash
-cm start 1
-cm ssh 1
-```
+The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper.
 
 ## Images
 
