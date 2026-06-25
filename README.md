@@ -46,16 +46,20 @@ Install `cm`:
 
 The installer creates a private `.cm-venv` with the Python Docker SDK and installs `cm` into `~/.local/bin` by default. If `~/.local/bin` is not on your `PATH`, the installer prints the shell commands to add it.
 
-## Image Build
+## Images
 
-`cm start` expects a local Docker image named `cm`. The image chain is:
+`cm start` expects a local Docker image named `cm`. That runtime image is intentionally thin so that changes to the base image can be picked up quickly:
 
 ```text
 cm-bootstrap:latest -> cm-base:latest -> cm:latest
 Debian + tooling       custom base       runtime entrypoint
 ```
 
-Build or refresh the bootstrap image from the current Debian base image and packages:
+### Fresh Image Build
+
+Use this method for first-time setup, after changing `Dockerfile.base`, or when you want a fresh base from Debian packages.
+
+Build or refresh the bootstrap image from the current Debian base image and package list:
 
 ```bash
 # Build or refresh the bootstrap image
@@ -86,16 +90,46 @@ Build the runtime image used by `cm`:
 docker build -t cm .
 ```
 
-Use `--pull --no-cache` when refreshing the bootstrap/base image. After changing only `Dockerfile` or `entrypoint.sh`, rebuild just the runtime image with the cached `cm-base:latest`. After changing `Dockerfile.base`, repeat the bootstrap/base/runtime flow above.
+After changing only `Dockerfile` or `entrypoint.sh`, rebuild just the runtime image with the cached `cm-base:latest`.
 
-To update an existing `cm-base:latest` without starting over, run the temporary container from `cm-base:latest` instead of `cm-bootstrap:latest`, then commit it and rebuild the runtime image.
+### Quick Base Updates
+
+Once `cm-base:latest` already exists, use this faster path for ad-hoc changes such as installing a package or tweaking shell configuration. It updates the base image directly, then rebuilds the thin runtime image, usually avoiding the slower Debian/package rebuild.
+
+Start a temporary container from the current base image:
 
 ```bash
-# Open the current base image for ad-hoc changes
 docker run -it --user me --name cm-mod cm-base:latest /bin/bash
 ```
 
-Image changes apply only to newly created containers. To move an instance to a new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean`.
+Make the changes inside that shell. For example:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y <package>
+```
+
+Exit the shell, then commit the container back over `cm-base:latest` and remove the temporary container:
+
+```bash
+docker commit cm-mod cm-base:latest
+docker rm cm-mod
+```
+
+Rebuild `cm` so new instances use the updated base:
+
+```bash
+docker build -t cm .
+```
+
+If the useful change already exists in a running `cm` instance, you can commit that instance instead:
+
+```bash
+docker commit cm-001 cm-base:latest
+docker build -t cm .
+```
+
+Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean`.
 
 ### Apple Silicon
 
