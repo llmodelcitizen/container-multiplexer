@@ -83,17 +83,15 @@ Remove the temporary container:
 docker rm cm-mod
 ```
 
-Finally, build the runtime image:
+Finally, build the runtime image. You can also run this command after changing `Dockerfile` or `entrypoint.sh`, keeping the existing `cm-base:latest`:
 
 ```bash
 docker build -t cm .
 ```
 
-After changing only `Dockerfile` or `entrypoint.sh`, rebuild just the runtime image with the cached `cm-base:latest`.
-
 ### Quick Base Updates
 
-Once `cm-base:latest` already exists, use this faster path for ad-hoc changes such as installing a package or tweaking shell configuration. It updates the base image directly, then rebuilds the thin runtime image, usually avoiding the slower Debian/package rebuild.
+Once `cm-base:latest` exists, you can use this faster path for ad-hoc changes. It updates the base image directly, then rebuilds the thin runtime image, usually avoiding the slower Debian/package rebuild.
 
 Start a temporary container from the current base image:
 
@@ -104,15 +102,13 @@ docker run -it --user me --name cm-mod cm-base:latest /bin/bash
 Make the changes inside that shell. For example:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y <package>
+sudo apt update && sudo apt install -y <package>
 ```
 
 Exit the shell, then commit the container back over `cm-base:latest` and remove the temporary container:
 
 ```bash
-docker commit cm-mod cm-base:latest
-docker rm cm-mod
+docker commit cm-mod cm-base:latest && docker rm cm-mod
 ```
 
 Rebuild `cm` so new instances use the updated base:
@@ -121,14 +117,14 @@ Rebuild `cm` so new instances use the updated base:
 docker build -t cm .
 ```
 
-If the useful change already exists in a running `cm` instance, you can commit that instance instead:
+Alternatively, if the useful change already exists in a running `cm` instance, you can commit that instance instead:
 
 ```bash
 docker commit cm-001 cm-base:latest
 docker build -t cm .
 ```
 
-Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean`.
+Remember that image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean`.
 
 ### Apple Silicon
 
@@ -137,19 +133,25 @@ On Apple Silicon Macs, Docker builds native `linux/arm64` images by default. Tha
 If you specifically need Intel/AMD64 images, use `--platform linux/amd64` consistently:
 
 ```bash
-# Build an amd64 bootstrap image
+# amd64 bootstrap image
 docker build --platform linux/amd64 --pull --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
 ```
 
+Create `cm-base:latest` from a temporary container. Make any package or config changes inside the container, or exit immediately if you do not need changes:
+
 ```bash
-# Run the amd64 temporary base container
 docker run --platform linux/amd64 -it --user me --name cm-mod cm-bootstrap:latest /bin/bash
 ```
 
 Then commit and remove the temporary container with the same commands shown above.
 
 ```bash
-# Build the amd64 runtime image
+docker commit cm-mod cm-base:latest && docker rm cm-mod
+```
+
+Finally, build the runtime image. You can also run this command after changing `Dockerfile` or `entrypoint.sh`, keeping the existing `cm-base:latest`:
+
+```
 docker build --platform linux/amd64 -t cm .
 ```
 
