@@ -38,6 +38,17 @@ Or:
 brew install tmux python
 ```
 
+You can use your normal `~/.ssh/authorized_keys` as the key source: create a key if needed and add its public key there. See [SSH Keys](#ssh-keys) for more details.
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+test -f ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+touch ~/.ssh/authorized_keys
+grep -qxFf ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
 Install `cm`:
 
 ```bash
@@ -198,12 +209,6 @@ Add this to your bash startup file, assuming you have used the `cm` installer. O
 
 ```bash
 command -v cm &>/dev/null && source <(cm autocomplete)
-```
-
-Reload the file you changed, for example:
-
-```bash
-source ~/.bashrc
 ```
 
 ## Commands
