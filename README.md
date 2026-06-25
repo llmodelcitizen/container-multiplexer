@@ -51,7 +51,7 @@ Install `cm`:
 ./install.sh
 ```
 
-The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
+The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. The source script is `cm.py`; after installation, the command remains `cm`. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
 
 Next, build the Docker image using [Fresh Image Build](#fresh-image-build). Once the image exists, start an instance and SSH into it:
 
@@ -171,7 +171,7 @@ docker build --platform linux/amd64 -t cm .
 
 ## SSH Keys
 
-`cm` expects a non-empty `~/.cm/authorized_keys` file. The installer creates it from `~/.ssh/cm_ed25519.pub` if needed. Running from this checkout and running an installed `cm` both use the same file.
+`cm` expects a non-empty `~/.cm/authorized_keys` file. The installer creates it from `~/.ssh/cm_ed25519.pub` if needed. Running `./cm.py` from this checkout and running an installed `cm` both use the same file.
 
 `cm` mounts that file into each container at `/tmp/cm_authorized_keys`; `entrypoint.sh` then installs it as `/home/me/.ssh/authorized_keys`.
 

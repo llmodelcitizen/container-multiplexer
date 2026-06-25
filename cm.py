@@ -37,6 +37,14 @@ AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
 
 
+def get_cm_command_path() -> Path:
+    """Return the command path nested cm commands should use."""
+    wrapper_path = SCRIPT_DIR / "cm"
+    if wrapper_path.exists():
+        return wrapper_path
+    return SCRIPT_DIR / "cm.py"
+
+
 def get_docker_sdk() -> Any:
     """Load the Docker SDK only when a Docker-backed command needs it."""
     global _docker_sdk
@@ -828,7 +836,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     print(f"{'#':<4} {'Container':<12} {'Status':<12} {'Uptime':<16} {'Health':<12} {'Port':<8} {'SSH'}")
     print("-" * 88)
     for n, name, state, uptime, health, port in sorted(instances):
-        ssh_cmd = f"./cm ssh {n}" if state == "running" else "-"
+        ssh_cmd = f"cm ssh {n}" if state == "running" else "-"
         print(f"{n:<4} {name:<12} {state:<12} {uptime:<16} {health:<12} {port:<8} {ssh_cmd}")
 
     return 0
@@ -982,7 +990,7 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
     # Create new session with first instance
     first = instances[0]
-    cm_path = shlex.quote(str(SCRIPT_DIR / "cm"))
+    cm_path = shlex.quote(str(get_cm_command_path()))
     pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
     run_tmux(["new-session", "-d", "-s", session_name, "-n", session_name,
                     pane_cmd], check=True)
@@ -1036,7 +1044,7 @@ def cmd_win(args: argparse.Namespace) -> int:
 
     # Create new session with first window
     first = instances[0]
-    cm_path = shlex.quote(str(SCRIPT_DIR / "cm"))
+    cm_path = shlex.quote(str(get_cm_command_path()))
     window_name = f"{session_name}-w{first}"
     pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
     run_tmux(["new-session", "-d", "-s", session_name,
@@ -1138,7 +1146,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     cm_sessions = [s for s in sessions if s == "cm" or s.startswith("cm-")]
 
     if not cm_sessions:
-        print("No cm sessions found. Use './cm pan' or './cm win' first.")
+        print("No cm sessions found. Use 'cm pan' or 'cm win' first.")
         return 1
 
     for session in cm_sessions:

@@ -170,7 +170,7 @@ echo "Installing Python Docker SDK"
 # Copy cm script and install a wrapper that always uses the managed venv.
 echo "Copying cm.py to $INSTALL_DIR/"
 rm -f "$CM_SCRIPT"
-cp "$SCRIPT_DIR/cm" "$CM_SCRIPT"
+cp "$SCRIPT_DIR/cm.py" "$CM_SCRIPT"
 chmod +x "$CM_SCRIPT"
 
 echo "Writing cm wrapper to $CM_WRAPPER"

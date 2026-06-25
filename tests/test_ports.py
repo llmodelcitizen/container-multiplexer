@@ -4,6 +4,7 @@ import contextlib
 import importlib.machinery
 import importlib.util
 import io
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -13,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_cm():
-    loader = importlib.machinery.SourceFileLoader("cm_under_test", str(ROOT / "cm"))
+    loader = importlib.machinery.SourceFileLoader("cm_under_test", str(ROOT / "cm.py"))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
@@ -197,12 +198,17 @@ class PortLookupTests(unittest.TestCase):
             raise ExecCalled(args)
 
         cm.os.execlp = fake_execlp
-        try:
-            with self.assertRaises(ExecCalled) as raised:
-                cm.cmd_ssh(types.SimpleNamespace(instance=1, identity=None))
-        finally:
-            cm.get_client = original_get_client
-            cm.os.execlp = original_execlp
+        with tempfile.TemporaryDirectory() as temp_dir:
+            identity = Path(temp_dir) / "cm_ed25519"
+            identity.write_text("fake key")
+            try:
+                with self.assertRaises(ExecCalled) as raised:
+                    cm.cmd_ssh(
+                        types.SimpleNamespace(instance=1, identity=str(identity))
+                    )
+            finally:
+                cm.get_client = original_get_client
+                cm.os.execlp = original_execlp
 
         self.assertIn("-p", raised.exception.args[0])
         port_arg_index = raised.exception.args[0].index("-p") + 1

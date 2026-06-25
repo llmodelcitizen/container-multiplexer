@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.machinery
 import importlib.util
 import shlex
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -10,7 +11,7 @@ from unittest import mock
 
 
 def load_cm_module():
-    cm_path = Path(__file__).resolve().parents[1] / "cm"
+    cm_path = Path(__file__).resolve().parents[1] / "cm.py"
     loader = importlib.machinery.SourceFileLoader("cm_script", str(cm_path))
     spec = importlib.util.spec_from_loader(loader.name, loader)
     assert spec is not None
@@ -47,7 +48,7 @@ class TmuxCommandQuotingTest(unittest.TestCase):
         return types.SimpleNamespace(returncode=0)
 
     def expected_shell_command(self, instance: int) -> str:
-        cm_path = shlex.quote(str(self.cm.SCRIPT_DIR / "cm"))
+        cm_path = shlex.quote(str(self.cm.SCRIPT_DIR / "cm.py"))
         return f"{cm_path} ssh {instance} || exec $SHELL"
 
     def test_pan_quotes_cm_path_in_tmux_shell_commands(self) -> None:
@@ -65,6 +66,14 @@ class TmuxCommandQuotingTest(unittest.TestCase):
 
         self.assertEqual(self.commands[0][-1], self.expected_shell_command(1))
         self.assertEqual(self.commands[5][-1], self.expected_shell_command(2))
+
+    def test_installed_wrapper_is_used_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            script_dir = Path(temp_dir)
+            (script_dir / "cm").touch()
+
+            with mock.patch.object(self.cm, "SCRIPT_DIR", script_dir):
+                self.assertEqual(self.cm.get_cm_command_path(), script_dir / "cm")
 
 
 if __name__ == "__main__":
