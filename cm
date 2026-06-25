@@ -25,21 +25,16 @@ _DOCKER_IMPORT_ERROR = (
 _docker_sdk: Any | None = None
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
+CM_HOME = Path.home() / ".cm"
 BASE_PORT = 2200
 SSH_CONTAINER_PORT = 22
 SSH_CONTAINER_PORT_PROTO = f"{SSH_CONTAINER_PORT}/tcp"
 MAX_INSTANCE = 499
 VERSION = "dev"
 IMAGE_NAME = "cm"
-WORKSPACES_DIR = SCRIPT_DIR / "workspaces"
+WORKSPACES_DIR = CM_HOME / "workspaces"
+AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
-
-# Ensure workspaces directory exists (handles symlink-to-nonexistent case)
-if WORKSPACES_DIR.is_symlink():
-    # Resolve symlink and create target directory
-    Path(os.readlink(WORKSPACES_DIR)).mkdir(exist_ok=True)
-else:
-    WORKSPACES_DIR.mkdir(exist_ok=True)
 
 
 def get_docker_sdk() -> Any:
@@ -312,23 +307,18 @@ def get_next_session_name() -> tuple[str, bool]:
 
 
 def get_authorized_keys_path() -> Path:
-    """Return the authorized_keys file to stage into containers.
-
-    Uses the project-root file as an override if it exists, otherwise
-    falls back to ~/.ssh/authorized_keys.
-    """
-    local = SCRIPT_DIR / "authorized_keys"
-    if local.exists():
-        path = local
-    else:
-        path = Path.home() / ".ssh" / "authorized_keys"
-        if not path.exists():
-            print("Error: No authorized_keys found. Place one in the project root or ensure ~/.ssh/authorized_keys exists.",
-                  file=sys.stderr)
-            sys.exit(1)
+    """Return the authorized_keys file to stage into containers."""
+    path = AUTHORIZED_KEYS_PATH
 
     if not path.is_file():
         print(f"Error: authorized_keys source is not a file: {path}", file=sys.stderr)
+        print("Create it from your cm public key, for example:", file=sys.stderr)
+        print("  mkdir -p ~/.cm", file=sys.stderr)
+        print("  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519", file=sys.stderr)
+        print("  cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys", file=sys.stderr)
+        print("  chmod 700 ~/.cm", file=sys.stderr)
+        print("  chmod 400 ~/.ssh/cm_ed25519", file=sys.stderr)
+        print("  chmod 600 ~/.cm/authorized_keys", file=sys.stderr)
         sys.exit(1)
     try:
         if path.stat().st_size == 0:
@@ -336,6 +326,9 @@ def get_authorized_keys_path() -> Path:
             sys.exit(1)
     except OSError as e:
         print(f"Error: Cannot read authorized_keys source {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not os.access(path, os.R_OK):
+        print(f"Error: Cannot read authorized_keys source: {path}", file=sys.stderr)
         sys.exit(1)
 
     return path
@@ -699,6 +692,13 @@ def cmd_clean(args: argparse.Namespace) -> int:
             continue
 
     # Find workspace dirs with no matching container
+    if not WORKSPACES_DIR.exists():
+        print("No orphaned workspaces found (use 'cm rm all' first to remove dead containers)")
+        return 0
+    if not WORKSPACES_DIR.is_dir():
+        print(f"Error: workspace path is not a directory: {WORKSPACES_DIR}")
+        return 1
+
     orphans = []
     for d in sorted(WORKSPACES_DIR.iterdir()):
         if not d.is_dir() or not d.name.startswith("cm."):
@@ -747,7 +747,15 @@ def cmd_ssh(args: argparse.Namespace) -> int:
 
     port = get_container_ssh_port(container, cfg["port"])
     target = "me@127.0.0.1"
-    identity = getattr(args, "identity", None) or os.environ.get("CM_SSH_IDENTITY")
+    identity = Path(getattr(args, "identity", None) or "~/.ssh/cm_ed25519").expanduser()
+    if not identity.is_file():
+        print(f"Error: SSH private key is not a file: {identity}", file=sys.stderr)
+        print("Create it with: ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519", file=sys.stderr)
+        print("Or pass another key with: cm ssh -i PATH N", file=sys.stderr)
+        return 1
+    if not os.access(identity, os.R_OK):
+        print(f"Error: Cannot read SSH private key: {identity}", file=sys.stderr)
+        return 1
     ssh_args = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
@@ -756,12 +764,9 @@ def cmd_ssh(args: argparse.Namespace) -> int:
         "-o", "SetEnv=LANG=en_US.UTF-8",
         "-o", "SendEnv=-LANG -LC_*",
         "-p", str(port),
+        "-i", str(identity),
+        "-o", "IdentitiesOnly=yes",
     ]
-    if identity:
-        ssh_args.extend([
-            "-i", os.path.expanduser(identity),
-            "-o", "IdentitiesOnly=yes",
-        ])
     ssh_args.append(target)
 
     try:
@@ -860,13 +865,14 @@ def cmd_complete(args: argparse.Namespace) -> int:
         else:
             # Filesystem scan - instant
             instances = []
-            for d in WORKSPACES_DIR.iterdir():
-                if d.is_dir() and d.name.startswith("cm."):
-                    try:
-                        n = int(d.name.split(".")[1])
-                        instances.append(n)
-                    except (IndexError, ValueError):
-                        pass
+            if WORKSPACES_DIR.is_dir():
+                for d in WORKSPACES_DIR.iterdir():
+                    if d.is_dir() and d.name.startswith("cm."):
+                        try:
+                            n = int(d.name.split(".")[1])
+                            instances.append(n)
+                        except (IndexError, ValueError):
+                            pass
             print(" ".join(str(n) for n in sorted(instances)))
 
     elif mode == "running":
@@ -1301,7 +1307,7 @@ def main() -> int:
     # ssh
     p_ssh = subparsers.add_parser("ssh", help="SSH into an instance")
     p_ssh.add_argument("-i", "--identity", metavar="PATH",
-                       help="SSH private key to use (or set CM_SSH_IDENTITY)")
+                       help="SSH private key to use (default: ~/.ssh/cm_ed25519)")
     p_ssh.add_argument("instance", type=int, metavar="N",
                        help="Instance number")
     p_ssh.set_defaults(func=cmd_ssh)

@@ -38,15 +38,15 @@ Or:
 brew install tmux python
 ```
 
-You can use your normal `~/.ssh/authorized_keys` as the key source: create a key if needed and add its public key there. See [SSH Keys](#ssh-keys) for more details.
+Create a dedicated SSH key for `cm`, then copy its public key to `~/.cm/authorized_keys`. `cm` uses that file for containers and the matching private key for `cm ssh`; it does not require or modify `~/.ssh/config`.
 
 ```bash
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-test -f ~/.ssh/id_ed25519.pub || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-touch ~/.ssh/authorized_keys
-grep -qxFf ~/.ssh/id_ed25519.pub ~/.ssh/authorized_keys || cat ~/.ssh/id_ed25519.pub >> ~/.ssh/authorized_keys
-chmod 600 ~/.ssh/authorized_keys
+mkdir -p ~/.ssh ~/.cm
+chmod 700 ~/.ssh ~/.cm
+ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519
+chmod 400 ~/.ssh/cm_ed25519
+cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys
+chmod 600 ~/.cm/authorized_keys
 ```
 
 Install `cm`:
@@ -55,7 +55,14 @@ Install `cm`:
 ./install.sh
 ```
 
-The installer prompts for an install directory (`~/.local/bin` by default), creates a private `.cm-venv` there with the Python Docker SDK, copies the CLI as `cm.py`, writes a `cm` wrapper, and symlinks `workspaces/` back to this checkout. When creating a symlink, it replaces an existing symlink but refuses to overwrite an existing non-symlink path. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
+The installer requires `~/.cm/authorized_keys`. It prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
+
+Next, build the Docker image using [Fresh Image Build](#fresh-image-build). Once the image exists, start an instance and SSH into it:
+
+```bash
+cm start 1
+cm ssh 1
+```
 
 ## Images
 
@@ -168,26 +175,15 @@ docker build --platform linux/amd64 -t cm .
 
 ## SSH Keys
 
-`cm` mounts the selected `authorized_keys` file into each container at `/tmp/cm_authorized_keys`; `entrypoint.sh` then installs it as `/home/me/.ssh/authorized_keys`.
+`cm` expects a non-empty `~/.cm/authorized_keys` file. Running from this checkout and running an installed `cm` both use the same file.
 
-During install, if a project-root `authorized_keys` exists, `install.sh` creates `$INSTALL_DIR/authorized_keys` as a symlink to it (`$INSTALL_DIR` is `~/.local/bin` by default).
+`cm` mounts that file into each container at `/tmp/cm_authorized_keys`; `entrypoint.sh` then installs it as `/home/me/.ssh/authorized_keys`.
 
-If a project-root `authorized_keys` does not exist during install, `install.sh` does not create that symlink. With no `$INSTALL_DIR/authorized_keys` present, the installed `cm` falls back to `~/.ssh/authorized_keys`; creating `$INSTALL_DIR/authorized_keys` later overrides that fallback.
-
-On each run, `cm` chooses the source file in this order. The chosen source must be a non-empty regular file.
-
-1. `authorized_keys` in the same directory as the `cm` program being executed.
-   - Running from this checkout: `./authorized_keys`
-   - Running an installed copy: `$INSTALL_DIR/authorized_keys`, which is `~/.local/bin/authorized_keys` by default
-2. `~/.ssh/authorized_keys`
-
-`cm ssh N` connects as `me@127.0.0.1` on the instance's published SSH port. You do not need to create a `Host cm` entry in your ssh config. To force a private key, use:
+`cm ssh N` connects as `me@127.0.0.1` on the instance's published SSH port using `~/.ssh/cm_ed25519` by default. You do not need to create a `Host cm` entry in your SSH config. To force a different private key, use:
 
 ```bash
-cm ssh -i ~/.ssh/id_ed25519 1
+cm ssh -i ~/.ssh/other_key 1
 ```
-
-or set `CM_SSH_IDENTITY=/path/to/key`.
 
 ## Shell Completion
 
@@ -259,7 +255,7 @@ cm sync off cm-s1   # Disable synchronize-panes for one named cm tmux session
 
 - Multi-instance `start`, `stop`, `restart`, and `rm` operations run in parallel.
 - SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` retries higher ports when a port is busy. Use `cm list` instead of assuming the port.
-- Workspaces live under the `workspaces/` directory next to the executed CLI (`workspaces/cm.001/`, `workspaces/cm.002/`, and so on) and are mounted at `/home/me/workspace`. The installer makes that installed `workspaces/` path a symlink back to this checkout.
+- Workspaces live under `~/.cm/workspaces/` (`~/.cm/workspaces/cm.001/`, `~/.cm/workspaces/cm.002/`, and so on) and are mounted at `/home/me/workspace`.
 - Tmux sessions are named `cm-s1`, `cm-s2`, and so on.
 - Clean exit from a container shell closes the tmux pane. Connection errors drop to a host shell.
 - When launched from an existing tmux or byobu session, `cm pan` and `cm win` switch the current tmux client into the new session; when that session is destroyed, tmux stays attached to another available session instead of detaching.

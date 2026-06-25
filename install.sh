@@ -5,6 +5,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+CM_HOME="$HOME/.cm"
+CM_WORKSPACES_DIR="$CM_HOME/workspaces"
+AUTHORIZED_KEYS="$CM_HOME/authorized_keys"
 
 path_export_value() {
     local dir="$1"
@@ -60,10 +63,12 @@ if [[ "$1" == "--uninstall" ]]; then
     removed=0
     for f in cm cm.py workspaces authorized_keys; do
         target="$INSTALL_DIR/$f"
-        if [[ -e "$target" || -L "$target" ]]; then
+        if [[ -L "$target" || -f "$target" ]]; then
             rm -f "$target"
             echo "Removed $target"
             ((removed++))
+        elif [[ -e "$target" ]]; then
+            echo "Keeping non-file path: $target"
         fi
     done
 
@@ -88,15 +93,42 @@ echo "CM Installer"
 echo "============"
 echo
 echo "This will:"
-echo "  1. Create a private Python virtual environment with the Docker SDK"
-echo "  2. Install a 'cm' wrapper and 'cm.py' script to your chosen directory"
-echo "  3. Create symlinks for 'workspaces/' (and 'authorized_keys' if present)"
+echo "  1. Validate ~/.cm/authorized_keys and create ~/.cm/workspaces"
+echo "  2. Create a private Python virtual environment with the Docker SDK"
+echo "  3. Install a 'cm' wrapper and 'cm.py' script to your chosen directory"
 echo
 read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 
 # Expand ~
 INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+
+if [[ -e "$CM_HOME" && ! -d "$CM_HOME" ]]; then
+    echo "Error: $CM_HOME exists and is not a directory."
+    exit 1
+fi
+mkdir -p "$CM_WORKSPACES_DIR"
+chmod 700 "$CM_HOME" "$CM_WORKSPACES_DIR"
+
+if [[ ! -f "$AUTHORIZED_KEYS" ]]; then
+    echo "Error: $AUTHORIZED_KEYS is required before installing."
+    echo "Create it with:"
+    echo "  mkdir -p ~/.cm"
+    echo "  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519"
+    echo "  cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys"
+    echo "  chmod 700 ~/.cm"
+    echo "  chmod 400 ~/.ssh/cm_ed25519"
+    echo "  chmod 600 ~/.cm/authorized_keys"
+    exit 1
+fi
+if [[ ! -s "$AUTHORIZED_KEYS" ]]; then
+    echo "Error: $AUTHORIZED_KEYS is empty. Add at least one public key before installing."
+    exit 1
+fi
+if [[ ! -r "$AUTHORIZED_KEYS" ]]; then
+    echo "Error: $AUTHORIZED_KEYS is not readable."
+    exit 1
+fi
 
 # Create install directory if needed
 if [[ ! -d "$INSTALL_DIR" ]]; then
@@ -149,28 +181,19 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
     fi
 fi
 
-# Helper to safely create symlink (only removes existing symlinks, never directories)
-safe_symlink() {
-    local target="$1"
-    local link="$2"
-    local name="$(basename "$link")"
+remove_old_symlink() {
+    local link="$1"
 
     if [[ -L "$link" ]]; then
         rm "$link"
+        echo "Removed old symlink: $link"
     elif [[ -e "$link" ]]; then
-        echo "Error: $link exists and is not a symlink. Remove it manually to proceed."
-        exit 1
+        echo "Leaving existing non-symlink path: $link"
     fi
-    ln -s "$target" "$link"
-    echo "Created symlink: $link -> $target"
 }
 
-if [[ -f "$SCRIPT_DIR/authorized_keys" ]]; then
-    safe_symlink "$SCRIPT_DIR/authorized_keys" "$INSTALL_DIR/authorized_keys"
-else
-    echo "No project-root authorized_keys found; will use ~/.ssh/authorized_keys"
-fi
-safe_symlink "$SCRIPT_DIR/workspaces" "$INSTALL_DIR/workspaces"
+remove_old_symlink "$INSTALL_DIR/authorized_keys"
+remove_old_symlink "$INSTALL_DIR/workspaces"
 
 echo
 echo "Installed successfully!"
