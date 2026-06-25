@@ -247,7 +247,7 @@ cm rm 1-12          # Remove a range of non-running containers
 cm pan 1-9 -s       # Short form of --sync
 cm sync off         # Disable synchronize-panes for cm sessions
 cm kill cm-s1       # Kill one named cm tmux session
-cm ssh -i ~/.ssh/id_ed25519 1  # SSH with a specific private key
+cm sync off cm-s1   # Disable synchronize-panes for one named cm session
 ```
 
 ## Behavior Notes
