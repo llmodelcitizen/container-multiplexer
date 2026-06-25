@@ -128,7 +128,7 @@ Remember that image changes apply only to newly created containers. To move an i
 
 ### Apple Silicon
 
-On Apple Silicon Macs, Docker builds native `linux/arm64` images by default. That is the fastest local path, and the commands above work as-is.
+On Apple Silicon Macs, Docker builds native `linux/arm64` images by default. That avoids Intel/AMD64 emulation, so local builds and containers are usually faster, and the commands above work as-is.
 
 If you specifically need Intel/AMD64 images, use `--platform linux/amd64` consistently:
 
