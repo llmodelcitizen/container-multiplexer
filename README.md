@@ -182,62 +182,73 @@ or set `CM_SSH_IDENTITY=/path/to/key`.
 
 `cm autocomplete` currently prints bash completion only, and it depends on `bash-completion`. zsh completion is not implemented.
 
-Linux bash:
+Install `bash-completion` if needed:
 
 ```bash
-# Install bash-completion
 sudo apt install bash-completion
 ```
 
-```bash
-# Append cm's bash completion
-cm autocomplete >> ~/.bashrc
-```
+Or:
 
 ```bash
-# Reload bash configuration
-source ~/.bashrc
-```
-
-macOS bash:
-
-```bash
-# Install Homebrew bash-completion
 brew install bash-completion@2
 ```
 
-```bash
-# Enable Homebrew bash-completion
-echo '[[ -r "$(brew --prefix)/etc/profile.d/bash_completion.sh" ]] && . "$(brew --prefix)/etc/profile.d/bash_completion.sh"' >> ~/.bash_profile
-```
+Add this to `~/.bashrc`, assuming you have used the `cm` installer:
 
 ```bash
-# Append cm's bash completion
-cm autocomplete >> ~/.bash_profile
+command -v cm &>/dev/null && source <(cm autocomplete)
 ```
 
+Reload bash configuration:
+
 ```bash
-# Reload bash profile
-source ~/.bash_profile
+source ~/.bashrc
 ```
 
 ## Commands
 
 Use `cm <command> -h` for command-specific help. Instance arguments support single numbers, ranges like `1-5`, and repeated values like `1 3 5`. Instance numbers must be `1` through `499`.
 
-- `cm start 1-12`: create or start instances.
-- `cm stop 1` / `cm stop all`: stop running containers without deleting them.
-- `cm restart 1` / `cm restart all`: restart named instances; `all` targets currently running instances.
-- `cm rm 1` / `cm rm all`: remove non-running containers; workspaces stay on disk.
-- `cm clean`: remove workspace directories with no matching container.
-- `cm list`: show instances, status, uptime, health, SSH port, and SSH command.
-- `cm ssh 1`: SSH into a running instance.
-- `cm logs 1`: stream container logs.
-- `cm pan 1-6` / `cm win 1-6`: open tmux panes or windows for running instances.
-- `cm pan 1-6 --sync`: open panes with synchronize-panes enabled.
-- `cm sync on` / `cm sync off`: toggle synchronize-panes for cm tmux sessions.
-- `cm kill`: kill cm tmux sessions, with confirmation when no session names are given.
-- `cm version`: print the installed version.
+```bash
+# Start/stop        (containers persist when stopped, like docker)
+cm start 1          # Start instance (creates new or starts existing stopped container)
+cm start 1-50       # Start 50 container instances (!)
+cm stop 1           # Stop a container (keeps it for later restart)
+cm stop all         # Stop all running instances
+cm restart all      # Restart all running instances
+cm rm 1             # Remove a non-running container
+cm rm all           # Remove all non-running containers
+cm clean            # Remove orphaned workspace directories
+
+# Connect
+cm list             # List all instances with status, health, port, and SSH command
+cm ssh 1            # SSH into an individual instance
+cm logs 1           # Stream container logs like "docker logs -f"
+
+# Tmux sessions     (for working with many container instances)
+cm pan 1-9          # Use split panes, each SSH'd to an instance
+cm pan 1-9 --sync   # Same, with synchronize-panes enabled
+cm win 1-2          # Use tmux windows instead of panes
+cm kill             # Kill cm sessions (all by default, with confirmation)
+cm sync on          # Enable synchronize-panes for cm sessions
+
+# Version
+cm version          # Print version
+```
+
+More examples:
+
+```bash
+cm start 1 3 5      # Start a specific set of instances
+cm stop 1-12        # Stop a range of running instances
+cm restart 7        # Restart one instance
+cm rm 1-12          # Remove a range of non-running containers
+cm pan 1-9 -s       # Short form of --sync
+cm sync off         # Disable synchronize-panes for cm sessions
+cm kill cm-s1       # Kill one named cm tmux session
+cm ssh -i ~/.ssh/id_ed25519 1  # SSH with a specific private key
+```
 
 ## Behavior Notes
 
