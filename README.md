@@ -53,6 +53,8 @@ Install `cm`:
 
 The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper.
 
+Once installed, follow the [Images](#images) section below. Then you can jump to the [Commands](#commands) section to get started.
+
 ## Images
 
 `cm start` needs a local Docker image named `cm` (`cm:latest`) when it creates a new container. That runtime image is intentionally thin so that changes to the base image can be picked up quickly:
