@@ -1,3 +1,4 @@
 authorized_keys
 workspaces/
 __pycache__/
+.DS_Store
