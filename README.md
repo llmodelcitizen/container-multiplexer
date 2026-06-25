@@ -157,9 +157,20 @@ docker build --platform linux/amd64 -t cm .
 
 ## SSH Keys
 
-`cm` mounts an `authorized_keys` file into each container. It uses an `authorized_keys` file next to the `cm` script when present; in this checkout, that is `./authorized_keys`. Otherwise it uses `~/.ssh/authorized_keys`.
+`cm` mounts an `authorized_keys` file into each container at `/home/me/.ssh/authorized_keys`.
 
-`cm ssh N` connects as `me@127.0.0.1` on the instance's published SSH port. No `Host cm` entry is needed. To force a private key, use:
+During install, if `./authorized_keys` exists, `install.sh` creates `$INSTALL_DIR/authorized_keys` as a symlink to it (`$INSTALL_DIR` is `~/.local/bin` by default).
+
+If `./authorized_keys` does not exist during install, `install.sh` does not create that symlink. The installed `cm` will then use `~/.ssh/authorized_keys` unless you later create `$INSTALL_DIR/authorized_keys`.
+
+On each run, `cm` chooses the source file in this order:
+
+1. `authorized_keys` in the same directory as the `cm` program being executed.
+   - Running from this checkout: `./authorized_keys`
+   - Running an installed copy: `$INSTALL_DIR/authorized_keys`, which is `~/.local/bin/authorized_keys` by default
+2. `~/.ssh/authorized_keys`
+
+`cm ssh N` connects as `me@127.0.0.1` on the instance's published SSH port. You do not need to create a `Host cm` entry in your ssh config. To force a private key, use:
 
 ```bash
 cm ssh -i ~/.ssh/id_ed25519 1
