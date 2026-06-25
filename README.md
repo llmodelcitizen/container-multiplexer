@@ -38,11 +38,9 @@ Or:
 brew install tmux python
 ```
 
-Create a dedicated SSH key for `cm`. The installer will use its public key to create `~/.cm/authorized_keys`; `cm` does not require or modify `~/.ssh/config`.
+Create a dedicated SSH key for `cm`:
 
 ```bash
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
 ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519
 chmod 400 ~/.ssh/cm_ed25519
 ```

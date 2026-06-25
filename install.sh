@@ -62,7 +62,7 @@ if [[ "$1" == "--uninstall" ]]; then
     INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
 
     removed=0
-    for f in cm cm.py workspaces authorized_keys; do
+    for f in cm cm.py; do
         target="$INSTALL_DIR/$f"
         if [[ -L "$target" || -f "$target" ]]; then
             rm -f "$target"
@@ -195,20 +195,6 @@ if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/
         echo "Version: $CM_VERSION"
     fi
 fi
-
-remove_old_symlink() {
-    local link="$1"
-
-    if [[ -L "$link" ]]; then
-        rm "$link"
-        echo "Removed old symlink: $link"
-    elif [[ -e "$link" ]]; then
-        echo "Leaving existing non-symlink path: $link"
-    fi
-}
-
-remove_old_symlink "$INSTALL_DIR/authorized_keys"
-remove_old_symlink "$INSTALL_DIR/workspaces"
 
 echo
 echo "Installed successfully!"
