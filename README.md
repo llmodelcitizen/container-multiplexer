@@ -38,15 +38,13 @@ Or:
 brew install tmux python
 ```
 
-Create a dedicated SSH key for `cm`, then copy its public key to `~/.cm/authorized_keys`. `cm` uses that file for containers and the matching private key for `cm ssh`; it does not require or modify `~/.ssh/config`.
+Create a dedicated SSH key for `cm`. The installer will use its public key to create `~/.cm/authorized_keys`; `cm` does not require or modify `~/.ssh/config`.
 
 ```bash
-mkdir -p ~/.ssh ~/.cm
-chmod 700 ~/.ssh ~/.cm
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
 ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519
 chmod 400 ~/.ssh/cm_ed25519
-cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys
-chmod 600 ~/.cm/authorized_keys
 ```
 
 Install `cm`:
@@ -55,7 +53,7 @@ Install `cm`:
 ./install.sh
 ```
 
-The installer requires `~/.cm/authorized_keys`. It prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
+The installer prompts for an install directory (`~/.local/bin` by default), creates `~/.cm/authorized_keys` from `~/.ssh/cm_ed25519.pub` if needed, creates `~/.cm/workspaces`, creates a private `.cm-venv` with the Python Docker SDK, copies the CLI as `cm.py`, and writes a `cm` wrapper. If the chosen install directory is not on your `PATH`, the installer prints the shell commands to add it.
 
 Next, build the Docker image using [Fresh Image Build](#fresh-image-build). Once the image exists, start an instance and SSH into it:
 
@@ -175,7 +173,7 @@ docker build --platform linux/amd64 -t cm .
 
 ## SSH Keys
 
-`cm` expects a non-empty `~/.cm/authorized_keys` file. Running from this checkout and running an installed `cm` both use the same file.
+`cm` expects a non-empty `~/.cm/authorized_keys` file. The installer creates it from `~/.ssh/cm_ed25519.pub` if needed. Running from this checkout and running an installed `cm` both use the same file.
 
 `cm` mounts that file into each container at `/tmp/cm_authorized_keys`; `entrypoint.sh` then installs it as `/home/me/.ssh/authorized_keys`.
 

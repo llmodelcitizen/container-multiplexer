@@ -8,6 +8,7 @@ DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 CM_HOME="$HOME/.cm"
 CM_WORKSPACES_DIR="$CM_HOME/workspaces"
 AUTHORIZED_KEYS="$CM_HOME/authorized_keys"
+DEFAULT_PUBLIC_KEY="$HOME/.ssh/cm_ed25519.pub"
 
 path_export_value() {
     local dir="$1"
@@ -93,7 +94,7 @@ echo "CM Installer"
 echo "============"
 echo
 echo "This will:"
-echo "  1. Validate ~/.cm/authorized_keys and create ~/.cm/workspaces"
+echo "  1. Create ~/.cm, ~/.cm/workspaces, and ~/.cm/authorized_keys"
 echo "  2. Create a private Python virtual environment with the Docker SDK"
 echo "  3. Install a 'cm' wrapper and 'cm.py' script to your chosen directory"
 echo
@@ -110,25 +111,39 @@ fi
 mkdir -p "$CM_WORKSPACES_DIR"
 chmod 700 "$CM_HOME" "$CM_WORKSPACES_DIR"
 
+if [[ ! -s "$AUTHORIZED_KEYS" ]]; then
+    if [[ ! -s "$DEFAULT_PUBLIC_KEY" ]]; then
+        echo "Error: $AUTHORIZED_KEYS is missing or empty, and $DEFAULT_PUBLIC_KEY was not found."
+        echo "Create the default cm SSH key first:"
+        echo "  mkdir -p ~/.ssh"
+        echo "  chmod 700 ~/.ssh"
+        echo "  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519"
+        echo "  chmod 400 ~/.ssh/cm_ed25519"
+        exit 1
+    fi
+
+    cp "$DEFAULT_PUBLIC_KEY" "$AUTHORIZED_KEYS"
+    chmod 600 "$AUTHORIZED_KEYS"
+    echo "Created $AUTHORIZED_KEYS from $DEFAULT_PUBLIC_KEY"
+fi
 if [[ ! -f "$AUTHORIZED_KEYS" ]]; then
-    echo "Error: $AUTHORIZED_KEYS is required before installing."
-    echo "Create it with:"
-    echo "  mkdir -p ~/.cm"
-    echo "  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519"
-    echo "  cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys"
-    echo "  chmod 700 ~/.cm"
-    echo "  chmod 400 ~/.ssh/cm_ed25519"
-    echo "  chmod 600 ~/.cm/authorized_keys"
+    echo "Error: $AUTHORIZED_KEYS is not a file."
     exit 1
 fi
 if [[ ! -s "$AUTHORIZED_KEYS" ]]; then
-    echo "Error: $AUTHORIZED_KEYS is empty. Add at least one public key before installing."
+    echo "Error: $AUTHORIZED_KEYS is empty."
+    echo "Create the default cm SSH key first:"
+    echo "  mkdir -p ~/.ssh"
+    echo "  chmod 700 ~/.ssh"
+    echo "  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519"
+    echo "  chmod 400 ~/.ssh/cm_ed25519"
     exit 1
 fi
 if [[ ! -r "$AUTHORIZED_KEYS" ]]; then
     echo "Error: $AUTHORIZED_KEYS is not readable."
     exit 1
 fi
+chmod 600 "$AUTHORIZED_KEYS"
 
 # Create install directory if needed
 if [[ ! -d "$INSTALL_DIR" ]]; then

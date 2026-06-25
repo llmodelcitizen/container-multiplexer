@@ -312,13 +312,12 @@ def get_authorized_keys_path() -> Path:
 
     if not path.is_file():
         print(f"Error: authorized_keys source is not a file: {path}", file=sys.stderr)
-        print("Create it from your cm public key, for example:", file=sys.stderr)
-        print("  mkdir -p ~/.cm", file=sys.stderr)
+        print("Create the default cm SSH key, then rerun the installer:", file=sys.stderr)
+        print("  mkdir -p ~/.ssh", file=sys.stderr)
+        print("  chmod 700 ~/.ssh", file=sys.stderr)
         print("  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519", file=sys.stderr)
-        print("  cp ~/.ssh/cm_ed25519.pub ~/.cm/authorized_keys", file=sys.stderr)
-        print("  chmod 700 ~/.cm", file=sys.stderr)
         print("  chmod 400 ~/.ssh/cm_ed25519", file=sys.stderr)
-        print("  chmod 600 ~/.cm/authorized_keys", file=sys.stderr)
+        print("  ./install.sh", file=sys.stderr)
         sys.exit(1)
     try:
         if path.stat().st_size == 0:
