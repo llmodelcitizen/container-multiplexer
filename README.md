@@ -62,31 +62,30 @@ Use this method for first-time setup, after changing `Dockerfile.base`, or when 
 Build or refresh the bootstrap image from the current Debian base image and package list:
 
 ```bash
-# Build or refresh the bootstrap image
 docker build --pull --no-cache -t cm-bootstrap:latest -f Dockerfile.base .
 ```
 
-Create `cm-base:latest` from a temporary container. Make any package or config changes inside the container, or exit immediately if you do not need changes.
+Create `cm-base:latest` from a temporary container. Make any package or config changes inside the container, or exit immediately if you do not need changes:
 
 ```bash
-# Open a temporary container for base-image changes
 docker run -it --user me --name cm-mod cm-bootstrap:latest /bin/bash
 ```
 
+Commit the base image:
+
 ```bash
-# Commit the base image
 docker commit cm-mod cm-base:latest
 ```
 
+Remove the temporary container:
+
 ```bash
-# Remove the temporary container
 docker rm cm-mod
 ```
 
-Build the runtime image used by `cm`:
+Finally, build the runtime image:
 
 ```bash
-# Build the runtime image
 docker build -t cm .
 ```
 
