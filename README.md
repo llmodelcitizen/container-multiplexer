@@ -140,7 +140,18 @@ docker build -t cm .
 
 ### Quicker Base Updates (Commit a Running Instance)
 
-If the useful change already exists in a running `cm` instance, you can commit that instance instead. This captures the container filesystem, not the mounted workspace at `/home/me/workspace`. Reset the runtime entrypoint while saving it as the base image:
+If the useful change already exists in a running `cm` instance, you can commit that instance instead. Prefer the clean `cm-mod` flow above for reusable base changes: start from `cm-base:latest`, apply only the intended package or config changes, then commit that temporary customization container.
+
+Warning: committing a running instance can persist credentials into `cm-base:latest`. Docker does not capture the mounted workspace at `/home/me/workspace`, but it does capture the rest of the container filesystem, including files under `/home/me`. Before committing, inspect the instance and remove anything that should not become part of the reusable base image:
+
+```bash
+docker diff cm-001
+docker exec -it cm-001 /bin/bash
+```
+
+Check common credential and config locations such as `/home/me/.ssh`, `/home/me/.gitconfig`, `/home/me/.git-credentials`, `/home/me/.config`, `/home/me/.docker`, `/home/me/.aws`, `/home/me/.azure`, `/home/me/.gnupg`, `/home/me/.npmrc`, `/home/me/.pypirc`, and shell history files. After cleanup, run `docker diff cm-001` again and only commit if the remaining filesystem changes are intended.
+
+Reset the runtime entrypoint while saving it as the base image:
 
 ```bash
 docker commit --change 'ENTRYPOINT []' cm-001 cm-base:latest
@@ -191,6 +202,28 @@ Image changes apply only to newly created containers. To move an instance to the
 ```bash
 cm ssh -i ~/.ssh/other_key 1
 ```
+
+## Linux UID/GID and Workspaces
+
+Each workspace is a host directory under `~/.cm/workspaces/` bind-mounted at `/home/me/workspace`. On native Linux, new containers are created with your current host UID/GID in `CM_HOST_UID` and `CM_HOST_GID`; the entrypoint remaps the container user `me` before SSH starts. This keeps the bind-mounted workspace writable even when your host UID is not `1000`.
+
+Do not run `cm start` or `cm restart` with `sudo` or as root on native Linux. The CLI rejects that case before creating the workspace because root-owned workspace directories can look like a successful start but be unwritable as `me` inside the container. Run `cm` as your normal user, usually by granting that user Docker access.
+
+If a workspace was already created with the wrong owner, fix it from the host:
+
+```bash
+sudo chown -R "$USER:$USER" ~/.cm
+```
+
+If an existing stopped container was created for a different Linux UID/GID, `cm start` asks you to remove and recreate the container. The workspace remains when you run `cm rm N`, so the normal repair flow is:
+
+```bash
+cm stop N  # only if it is running
+cm rm N
+cm start N
+```
+
+Docker Desktop on macOS keeps the previous behavior; `cm` does not remap `me` there.
 
 ## Shell Completion
 

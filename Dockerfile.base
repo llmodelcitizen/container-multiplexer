@@ -21,8 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Generate locale to prevent setlocale warnings from SSH clients
 RUN sed -i 's/# en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen && locale-gen
 
-# Create "me" user with sudo access
-RUN useradd -m -s /bin/bash me && \
+# Create "me" user with sudo access. UID/GID 1000 is the image default; the
+# runtime entrypoint can remap it to the native Linux host user for bind mounts.
+RUN groupadd -g 1000 me && \
+    useradd -m -u 1000 -g 1000 -s /bin/bash me && \
     echo "me ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 # Configure SSH

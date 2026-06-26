@@ -8,6 +8,7 @@ import shlex
 import subprocess
 import sys
 import os
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,6 +36,28 @@ IMAGE_NAME = "cm"
 WORKSPACES_DIR = CM_HOME / "workspaces"
 AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
+CONTAINER_DEFAULT_UID = 1000
+CONTAINER_DEFAULT_GID = 1000
+LINUX_HOST_UID_ENV = "CM_HOST_UID"
+LINUX_HOST_GID_ENV = "CM_HOST_GID"
+
+
+class WorkspacePreflightError(RuntimeError):
+    """Raised when the host workspace would not be usable in the container."""
+
+
+MANAGED_LABEL = "cm.managed"
+MANAGED_LABEL_VALUE = "true"
+
+
+class UnmanagedContainerNameError(RuntimeError):
+    """Raised when a cm-NNN Docker name is owned by another container."""
+
+    def __init__(self, name: str):
+        super().__init__(
+            f"Error: Docker name '{name}' is occupied by an unmanaged container "
+            f"(missing label {MANAGED_LABEL}={MANAGED_LABEL_VALUE})."
+        )
 
 
 def get_cm_command_path() -> Path:
@@ -106,6 +129,166 @@ def get_container(client: docker.DockerClient, name: str):
         return client.containers.get(name)
     except docker_sdk.errors.NotFound:
         return None
+
+
+def get_container_labels(container) -> dict:
+    """Get Docker labels from a high-level container object."""
+    labels = getattr(container, "labels", None)
+    if isinstance(labels, dict):
+        return labels
+
+    attrs = getattr(container, "attrs", {})
+    if not isinstance(attrs, dict):
+        return {}
+
+    config = attrs.get("Config", {})
+    if not isinstance(config, dict):
+        return {}
+
+    labels = config.get("Labels", {})
+    if isinstance(labels, dict):
+        return labels
+    return {}
+
+
+def is_managed_container(container) -> bool:
+    """Return True when a container carries the cm managed label."""
+    return get_container_labels(container).get(MANAGED_LABEL) == MANAGED_LABEL_VALUE
+
+
+def get_managed_container(client: docker.DockerClient, name: str):
+    """Get a cm-managed container by name, refusing unmanaged name collisions."""
+    container = get_container(client, name)
+    if container is None:
+        return None
+    if not is_managed_container(container):
+        raise UnmanagedContainerNameError(name)
+    return container
+
+
+def get_unmanaged_container_error(client: docker.DockerClient, name: str) -> str | None:
+    """Return a clear error if name is occupied by an unmanaged container."""
+    docker_sdk = get_docker_sdk()
+    try:
+        get_managed_container(client, name)
+    except UnmanagedContainerNameError as e:
+        return str(e)
+    except docker_sdk.errors.APIError:
+        return None
+    return None
+
+
+def is_native_linux_host() -> bool:
+    """Return True when cm is running directly on a Linux host."""
+    return sys.platform.startswith("linux")
+
+
+def get_linux_host_identity() -> tuple[int, int] | None:
+    """Return the native Linux host UID/GID to mirror into the container."""
+    if not is_native_linux_host():
+        return None
+    if not all(hasattr(os, name) for name in ("getuid", "geteuid", "getgid")):
+        return None
+
+    uid = os.getuid()
+    euid = os.geteuid()
+    gid = os.getgid()
+    if uid == 0 or euid == 0:
+        raise WorkspacePreflightError(
+            "Error: do not run cm start/restart with sudo or as root on native Linux.\n"
+            "Running as root can create root-owned workspaces that user me cannot write.\n"
+            "Run cm as your normal user after granting Docker access to that user."
+        )
+
+    return (uid, gid)
+
+
+def get_container_environment() -> dict[str, str] | None:
+    """Return environment variables to apply when creating new containers."""
+    identity = get_linux_host_identity()
+    if identity is None:
+        return None
+
+    uid, gid = identity
+    return {
+        LINUX_HOST_UID_ENV: str(uid),
+        LINUX_HOST_GID_ENV: str(gid),
+    }
+
+
+def prepare_workspace(workspace: Path) -> None:
+    """Create and verify a workspace before it is bind-mounted."""
+    get_linux_host_identity()
+
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise WorkspacePreflightError(
+            f"Error: cannot create workspace directory {workspace}: {e}"
+        ) from e
+
+    if not is_native_linux_host():
+        return
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            dir=workspace, prefix=".cm-write-test-", delete=True
+        ):
+            pass
+    except OSError as e:
+        raise WorkspacePreflightError(
+            f"Error: workspace is not writable by the current host user: {workspace}\n"
+            "Fix the ownership or permissions before starting the instance."
+        ) from e
+
+
+def get_container_env(container) -> dict[str, str]:
+    """Extract environment variables from Docker inspect attrs."""
+    attrs = getattr(container, "attrs", {})
+    if not isinstance(attrs, dict):
+        return {}
+
+    config = attrs.get("Config", {})
+    if not isinstance(config, dict):
+        return {}
+
+    env_items = config.get("Env", [])
+    if not isinstance(env_items, list):
+        return {}
+
+    env = {}
+    for item in env_items:
+        if isinstance(item, str) and "=" in item:
+            key, value = item.split("=", 1)
+            env[key] = value
+    return env
+
+
+def get_existing_container_identity_error(container, n: int) -> str | None:
+    """Return an error when an existing container cannot match this host UID/GID."""
+    identity = get_linux_host_identity()
+    if identity is None:
+        return None
+
+    uid, gid = identity
+    env = get_container_env(container)
+    container_uid = env.get(LINUX_HOST_UID_ENV)
+    container_gid = env.get(LINUX_HOST_GID_ENV)
+
+    if container_uid == str(uid) and container_gid == str(gid):
+        return None
+    if container_uid is None and container_gid is None and uid == CONTAINER_DEFAULT_UID:
+        return None
+
+    configured = (
+        f"{container_uid or str(CONTAINER_DEFAULT_UID)}:"
+        f"{container_gid or str(CONTAINER_DEFAULT_GID)}"
+    )
+    return (
+        f"Instance {n} exists but was created for Linux UID/GID {configured}, "
+        f"not the current host UID/GID {uid}:{gid}. Stop and remove the container, "
+        f"then run 'cm start {n}' again; the workspace directory remains."
+    )
 
 
 def _parse_port(port: object) -> int | None:
@@ -349,17 +532,17 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
     port = cfg["port"]
     max_port_attempts = 100
     auth_keys = get_authorized_keys_path()
+    environment = get_container_environment()
     docker_sdk = get_docker_sdk()
 
     for attempt in range(max_port_attempts):
         try:
-            client.containers.run(
-                IMAGE_NAME,
-                detach=True,
-                name=cfg["container"],
-                hostname=cfg["container"],
-                ports={"22/tcp": ("127.0.0.1", port)},
-                volumes={
+            run_kwargs = {
+                "detach": True,
+                "name": cfg["container"],
+                "hostname": cfg["container"],
+                "ports": {"22/tcp": ("127.0.0.1", port)},
+                "volumes": {
                     str(auth_keys): {
                         "bind": AUTHORIZED_KEYS_MOUNT,
                         "mode": "ro",
@@ -369,14 +552,24 @@ def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple
                         "mode": "rw",
                     },
                 },
-                restart_policy={"Name": "unless-stopped"},
-                labels={"cm.managed": "true"},
-            )
+                "restart_policy": {"Name": "unless-stopped"},
+                "labels": {MANAGED_LABEL: MANAGED_LABEL_VALUE},
+            }
+            if environment:
+                run_kwargs["environment"] = environment
+            client.containers.run(IMAGE_NAME, **run_kwargs)
             return (port, None)
         except docker_sdk.errors.APIError as e:
+            unmanaged_error = get_unmanaged_container_error(client, cfg["container"])
+            if unmanaged_error:
+                return (None, unmanaged_error)
+
             if is_port_allocation_error(e):
                 # Remove the failed container before retrying with new port
-                container = get_container(client, cfg["container"])
+                try:
+                    container = get_managed_container(client, cfg["container"])
+                except UnmanagedContainerNameError as unmanaged:
+                    return (None, str(unmanaged))
                 if container:
                     container.remove(force=True)
                 port += 1
@@ -390,13 +583,24 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
     """Start a single instance. Returns True on success."""
     cfg = get_instance_config(n)
     docker_sdk = get_docker_sdk()
-
-    # Create workspace if needed
-    cfg["workspace"].mkdir(parents=True, exist_ok=True)
+    try:
+        prepare_workspace(cfg["workspace"])
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return False
 
     # Check if container exists
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return False
+
     if container:
+        identity_error = get_existing_container_identity_error(container, n)
+        if identity_error:
+            print(identity_error)
+            return False
         if container.status == "running":
             print(f"Instance {n} is already running")
             return True
@@ -430,7 +634,11 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
     """Stop a single instance. Returns True on success."""
     cfg = get_instance_config(n)
 
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return False
     if not container:
         print(f"Instance {n} does not exist")
         return False
@@ -447,8 +655,22 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
 def restart_instance(client: docker.DockerClient, n: int) -> bool:
     """Restart a single instance. Returns True on success."""
     cfg = get_instance_config(n)
+    try:
+        prepare_workspace(cfg["workspace"])
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return False
 
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return False
+    if container:
+        identity_error = get_existing_container_identity_error(container, n)
+        if identity_error:
+            print(identity_error)
+            return False
     if container and container.status == "running":
         container.stop()
 
@@ -459,7 +681,11 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
     """Remove a dead (non-running) container. Returns True on success."""
     cfg = get_instance_config(n)
 
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return False
     if not container:
         print(f"Instance {n} does not exist")
         return False
@@ -479,10 +705,20 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
     docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
-        cfg["workspace"].mkdir(parents=True, exist_ok=True)
+        try:
+            prepare_workspace(cfg["workspace"])
+        except WorkspacePreflightError as e:
+            return (n, False, str(e))
 
-        container = get_container(client, cfg["container"])
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError as e:
+            return (n, False, str(e))
+
         if container:
+            identity_error = get_existing_container_identity_error(container, n)
+            if identity_error:
+                return (n, False, identity_error)
             if container.status == "running":
                 return (n, True, f"Instance {n} is already running")
             # Start existing stopped container
@@ -510,7 +746,10 @@ def _stop_instance_worker(n: int) -> tuple[int, bool, str]:
     client = get_client()
     try:
         cfg = get_instance_config(n)
-        container = get_container(client, cfg["container"])
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError as e:
+            return (n, False, str(e))
         if not container:
             return (n, False, f"Instance {n} does not exist")
         if container.status != "running":
@@ -527,10 +766,20 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
     docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
-        cfg["workspace"].mkdir(parents=True, exist_ok=True)
+        try:
+            prepare_workspace(cfg["workspace"])
+        except WorkspacePreflightError as e:
+            return (n, False, str(e))
 
-        container = get_container(client, cfg["container"])
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError as e:
+            return (n, False, str(e))
+
         if container:
+            identity_error = get_existing_container_identity_error(container, n)
+            if identity_error:
+                return (n, False, identity_error)
             if container.status == "running":
                 container.stop()
             # Start existing container
@@ -558,7 +807,10 @@ def _rm_instance_worker(n: int) -> tuple[int, bool, str]:
     client = get_client()
     try:
         cfg = get_instance_config(n)
-        container = get_container(client, cfg["container"])
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError as e:
+            return (n, False, str(e))
         if not container:
             return (n, False, f"Instance {n} does not exist")
         if container.status == "running":
@@ -593,6 +845,11 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
 def cmd_start(args: argparse.Namespace) -> int:
     """Start instances."""
     instances = parse_instances(args.instances)
+    try:
+        get_linux_host_identity()
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return 1
 
     if not instances:
         print("No instances specified")
@@ -608,6 +865,12 @@ def cmd_start(args: argparse.Namespace) -> int:
 
 def cmd_restart(args: argparse.Namespace) -> int:
     """Restart instances."""
+    try:
+        get_linux_host_identity()
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return 1
+
     if args.instances == ["all"]:
         client = get_client()
         instances = get_running_instances(client)
@@ -747,7 +1010,11 @@ def cmd_ssh(args: argparse.Namespace) -> int:
     client = get_client()
     cfg = get_instance_config(args.instance)
 
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return 1
     if not container or container.status != "running":
         print(f"Instance {args.instance} is not running")
         return 1
@@ -952,7 +1219,11 @@ def cmd_logs(args: argparse.Namespace) -> int:
     client = get_client()
     cfg = get_instance_config(args.instance)
 
-    container = get_container(client, cfg["container"])
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return 1
     if not container:
         print(f"Instance {args.instance} does not exist")
         return 1

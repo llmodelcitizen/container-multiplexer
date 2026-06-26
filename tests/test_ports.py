@@ -203,6 +203,7 @@ class PortLookupTests(unittest.TestCase):
     def test_cmd_ssh_uses_actual_container_port(self):
         container = FakeContainer(
             attrs={
+                "Config": {"Labels": {"cm.managed": "true"}},
                 "NetworkSettings": {
                     "Ports": {
                         "22/tcp": [{"HostIp": "127.0.0.1", "HostPort": "2401"}]

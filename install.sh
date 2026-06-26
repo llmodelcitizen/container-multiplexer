@@ -67,7 +67,7 @@ if [[ "$1" == "--uninstall" ]]; then
         if [[ -L "$target" || -f "$target" ]]; then
             rm -f "$target"
             echo "Removed $target"
-            ((removed++))
+            removed=$((removed + 1))
         elif [[ -e "$target" ]]; then
             echo "Keeping non-file path: $target"
         fi
@@ -77,7 +77,7 @@ if [[ "$1" == "--uninstall" ]]; then
     if [[ -e "$venv" || -L "$venv" ]]; then
         rm -rf "$venv"
         echo "Removed $venv"
-        ((removed++))
+        removed=$((removed + 1))
     fi
 
     if [[ $removed -eq 0 ]]; then
