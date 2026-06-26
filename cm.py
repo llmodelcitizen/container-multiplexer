@@ -798,6 +798,8 @@ def parse_status(status_str: str) -> tuple[str, str]:
     if " (" in rest:
         uptime, health_part = rest.split(" (", 1)
         health = health_part.rstrip(")")
+        if health.startswith("health: "):
+            health = health.removeprefix("health: ")
     else:
         uptime = rest
         health = "-"

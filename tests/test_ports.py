@@ -75,6 +75,30 @@ class FakeClient:
 
 
 class PortLookupTests(unittest.TestCase):
+    def test_parse_status_extracts_healthy_healthcheck(self):
+        self.assertEqual(
+            cm.parse_status("Up 2 minutes (healthy)"),
+            ("2 minutes", "healthy"),
+        )
+
+    def test_parse_status_extracts_unhealthy_healthcheck(self):
+        self.assertEqual(
+            cm.parse_status("Up 2 minutes (unhealthy)"),
+            ("2 minutes", "unhealthy"),
+        )
+
+    def test_parse_status_extracts_starting_healthcheck(self):
+        self.assertEqual(
+            cm.parse_status("Up 4 seconds (health: starting)"),
+            ("4 seconds", "starting"),
+        )
+
+    def test_parse_status_ignores_non_up_statuses(self):
+        self.assertEqual(
+            cm.parse_status("Restarting (1) 5 seconds ago"),
+            ("-", "-"),
+        )
+
     def test_summary_port_uses_actual_public_port(self):
         summary = {
             "Ports": [

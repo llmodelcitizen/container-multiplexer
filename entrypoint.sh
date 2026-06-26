@@ -27,8 +27,5 @@ fi
 install -d -o me -g me -m 700 "$SSH_DIR"
 install -o me -g me -m 600 "$AUTHORIZED_KEYS_SRC" "$AUTHORIZED_KEYS_DST"
 
-# Start SSH daemon
-/usr/sbin/sshd -D &
-
-# Keep container running
-exec tail -f /dev/null
+# Start SSH daemon as the container foreground process
+exec /usr/sbin/sshd -D -e
