@@ -140,16 +140,14 @@ docker build -t cm .
 
 ### Quicker Base Updates (Commit a Running Instance)
 
-If the useful change already exists in a running `cm` instance, you can commit that instance instead. Prefer the clean `cm-mod` flow above for reusable base changes: start from `cm-base:latest`, apply only the intended package or config changes, then commit that temporary customization container.
+If the useful change already exists in a running `cm` instance, you can commit that instance instead.
 
-Warning: committing a running instance can persist credentials into `cm-base:latest`. Docker does not capture the mounted workspace at `/home/me/workspace`, but it does capture the rest of the container filesystem, including files under `/home/me`. Before committing, inspect the instance and remove anything that should not become part of the reusable base image:
+Warning: committing a running instance can persist unwanted artifacts into `cm-base:latest`. Before committing, inspect the instance and remove anything that should not become part of the reusable base image:
 
 ```bash
 docker diff cm-001
 docker exec -it cm-001 /bin/bash
 ```
-
-Check common credential and config locations such as `/home/me/.ssh`, `/home/me/.gitconfig`, `/home/me/.git-credentials`, `/home/me/.config`, `/home/me/.docker`, `/home/me/.aws`, `/home/me/.azure`, `/home/me/.gnupg`, `/home/me/.npmrc`, `/home/me/.pypirc`, and shell history files. After cleanup, run `docker diff cm-001` again and only commit if the remaining filesystem changes are intended.
 
 Reset the runtime entrypoint while saving it as the base image:
 
@@ -190,6 +188,8 @@ docker build --platform linux/amd64 -t cm .
 ### Applying Image Changes
 
 Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean` while no container exists for that instance.
+
+Use `cm list` to see whether each instance is using the current local `cm:latest` image. The `Image` column shows `current`, `stale`, or `unknown`; `cm inspect N` prints the container and local image IDs plus creation dates when Docker can read them.
 
 ## SSH Keys
 
@@ -263,10 +263,10 @@ cm rm all           # Remove all non-running containers
 cm clean            # Prompt to remove orphaned workspace directories
 
 # Connect
-cm list             # List all instances with status, health, port, and SSH command
+cm list             # List instances with status, image status, health, port, and SSH command
 cm ssh 1            # SSH into an individual instance
 cm logs 1           # Stream container logs like "docker logs -f"
-cm inspect 1        # Diagnose SSH, health, workspace, image, and UID/GID issues
+cm inspect 1        # Diagnose SSH, health, workspace, image drift, and UID/GID issues
 
 # Tmux sessions     (for working with many container instances)
 cm pan 1-9          # Use split panes, each SSH'd to a running instance
@@ -296,6 +296,7 @@ cm sync off cm-s1   # Disable synchronize-panes for one named cm tmux session
 
 - Multi-instance `start`, `stop`, `restart`, and `rm` operations run in parallel.
 - SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` retries higher ports when a port is busy. Use `cm list` instead of assuming the port.
+- `cm list` compares each container image ID to the current local `cm:latest` image ID and reports `current`, `stale`, or `unknown`.
 - Workspaces live under `~/.cm/workspaces/` (`~/.cm/workspaces/cm.001/`, `~/.cm/workspaces/cm.002/`, and so on) and are mounted at `/home/me/workspace`.
 - Tmux sessions are named `cm-s1`, `cm-s2`, and so on.
 - Clean exit from a container shell closes the tmux pane. Connection errors drop to a host shell.
