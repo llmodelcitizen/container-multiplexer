@@ -105,8 +105,7 @@ docker build -t cm .
 If you do not need to customize the base image interactively, you can skip the temporary container and tag the bootstrap image as the base. This also omits `--pull` and `--no-cache` for faster local rebuilds:
 
 ```bash
-docker build -t cm-bootstrap:latest -f Dockerfile.base .
-docker tag cm-bootstrap:latest cm-base:latest
+docker build -t cm-bootstrap:latest -t cm-base:latest -f Dockerfile.base .
 docker build -t cm .
 ```
 
@@ -187,7 +186,7 @@ docker build --platform linux/amd64 -t cm .
 
 ### Applying Image Changes
 
-Image changes apply only to newly created containers. To move an instance to the new image, stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean` while no container exists for that instance.
+Image changes apply only to newly created containers. To move an instance to the new image, run `cm update N`; it recreates the container from the current local `cm:latest` image and preserves the workspace. The manual equivalent is to stop it, remove the stopped container with `cm rm N`, then start it again. The workspace remains unless you run `cm clean` while no container exists for that instance.
 
 Use `cm list` to see whether each instance is using the current local `cm:latest` image. The `Image` column shows `current`, `stale`, or `unknown`; `cm inspect N` prints the container and local image IDs plus creation dates when Docker can read them.
 
@@ -249,7 +248,7 @@ command -v cm &>/dev/null && source <(cm autocomplete)
 
 ## Commands
 
-Use `cm <command> -h` for command-specific help. Commands that accept instance lists (`start`, `stop`, `restart`, `rm`, `pan`, and `win`) support single numbers, ranges like `1-5`, and repeated values like `1 3 5`; those list-style instance numbers must be `1` through `499`. `stop`, `restart`, and `rm` also accept `all`. `ssh` and `logs` accept one instance number.
+Use `cm <command> -h` for command-specific help. Commands that accept instance lists (`start`, `stop`, `restart`, `update`, `rm`, `pan`, and `win`) support single numbers, ranges like `1-5`, and repeated values like `1 3 5`; those list-style instance numbers must be `1` through `499`. `stop`, `restart`, `update`, and `rm` also accept `all`. `ssh` and `logs` accept one instance number.
 
 ```bash
 # Start/stop        (containers persist when stopped, like docker)
@@ -258,6 +257,8 @@ cm start 1-50       # Start 50 container instances (!)
 cm stop 1           # Stop a container (keeps it for later restart)
 cm stop all         # Stop all running instances
 cm restart all      # Restart all running instances
+cm update 1         # Recreate a stale instance from current cm:latest
+cm update all       # Recreate stale instances from current cm:latest
 cm rm 1             # Remove a non-running container
 cm rm all           # Remove all non-running containers
 cm clean            # Prompt to remove orphaned workspace directories
@@ -285,6 +286,8 @@ More examples:
 cm start 1 3 5      # Start a specific set of instances
 cm stop 1-12        # Stop a range of running instances
 cm restart 7        # Restart one instance
+cm update 7 --yes   # Recreate without prompting
+cm update 7 --force # Recreate even when image status is current or unknown
 cm rm 1-12          # Remove a range of non-running containers
 cm pan 1-9 -s       # Short form of --sync
 cm sync off         # Disable synchronize-panes for cm tmux sessions
@@ -297,6 +300,7 @@ cm sync off cm-s1   # Disable synchronize-panes for one named cm tmux session
 - Multi-instance `start`, `stop`, `restart`, and `rm` operations run in parallel.
 - SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` retries higher ports when a port is busy. Use `cm list` instead of assuming the port.
 - `cm list` compares each container image ID to the current local `cm:latest` image ID and reports `current`, `stale`, or `unknown`.
+- `cm update` recreates containers from `cm:latest`. It preserves the workspace bind mount, but changes inside the container outside `/home/me/workspace` are lost.
 - Workspaces live under `~/.cm/workspaces/` (`~/.cm/workspaces/cm.001/`, `~/.cm/workspaces/cm.002/`, and so on) and are mounted at `/home/me/workspace`.
 - Tmux sessions are named `cm-s1`, `cm-s2`, and so on.
 - Clean exit from a container shell closes the tmux pane. Connection errors drop to a host shell.

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -534,6 +535,22 @@ def get_dead_instances(client: docker.DockerClient) -> list[int]:
     return sorted(instances)
 
 
+def get_all_instances(client: docker.DockerClient) -> list[int]:
+    """Get all known managed instance numbers."""
+    containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
+    instances = []
+    for c in containers:
+        names = c.get("Names", [])
+        if not names:
+            continue
+        try:
+            n = int(names[0].lstrip("/").split("-")[1])
+            instances.append(n)
+        except (IndexError, ValueError):
+            continue
+    return sorted(set(instances))
+
+
 def get_next_session_name() -> tuple[str, bool]:
     """Get next available tmux session name.
 
@@ -754,6 +771,170 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
     return True
 
 
+def _remove_container(container, force: bool = False) -> None:
+    try:
+        container.remove(force=force)
+    except TypeError:
+        container.remove()
+
+
+def _container_running(container, attrs: dict) -> bool:
+    state = _nested(attrs, "State", "Status")
+    if state:
+        return state == "running"
+    return getattr(container, "status", None) == "running"
+
+
+def _local_image_unavailable_message(local_image: ImageMetadata) -> str:
+    if local_image.error:
+        return f"Image '{CM_IMAGE_REF}' unavailable: {local_image.error}"
+    return f"Image '{CM_IMAGE_REF}' has no readable image ID"
+
+
+def _remove_failed_update_container(client, container_name: str) -> None:
+    try:
+        failed_container = get_managed_container(client, container_name)
+    except UnmanagedContainerNameError:
+        return
+    if failed_container:
+        _remove_container(failed_container, force=True)
+
+
+def _restore_update_backup(
+    backup_container,
+    original_name: str,
+    was_running: bool,
+) -> str | None:
+    try:
+        backup_container.rename(original_name)
+        if was_running:
+            backup_container.start()
+    except Exception as e:
+        return str(e)
+    return None
+
+
+def update_instance(
+    client: docker.DockerClient,
+    n: int,
+    *,
+    force: bool = False,
+    local_image: ImageMetadata | None = None,
+) -> bool:
+    """Recreate one instance from the current local cm:latest image."""
+    cfg = get_instance_config(n)
+    try:
+        prepare_workspace(cfg["workspace"])
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return False
+
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return False
+    if not container:
+        print(f"Instance {n} does not exist")
+        return False
+
+    identity_error = get_existing_container_identity_error(container, n)
+    if identity_error:
+        print(identity_error)
+        return False
+
+    local_image = local_image or _get_local_cm_image_metadata(client)
+    if not local_image.id:
+        print(_local_image_unavailable_message(local_image))
+        print(f"Build it first: docker build -t {IMAGE_NAME} .")
+        return False
+
+    attrs = _container_attrs(container)
+    image_status = _image_status(attrs.get("Image"), local_image.id)
+    if image_status == "current" and not force:
+        print(f"Instance {n} image is current (use --force to recreate)")
+        return True
+    if image_status == "unknown" and not force:
+        print(f"Instance {n} image status is unknown (use --force to recreate)")
+        return False
+
+    was_running = _container_running(container, attrs)
+    backup_name = f"cm-update-backup-{n:03d}-{os.getpid()}-{time.time_ns()}"
+
+    try:
+        if was_running:
+            container.stop()
+        container.rename(backup_name)
+    except Exception as e:
+        if was_running:
+            try:
+                container.start()
+            except Exception:
+                pass
+        print(f"Failed to prepare instance {n} for update: {e}")
+        return False
+
+    port, error = try_start_container(client, n, cfg)
+    if error:
+        _remove_failed_update_container(client, cfg["container"])
+        restore_error = _restore_update_backup(container, cfg["container"], was_running)
+        if restore_error:
+            print(
+                f"Failed to update instance {n}: {error}; "
+                f"also failed to restore old container: {restore_error}"
+            )
+        else:
+            print(f"Failed to update instance {n}: {error}; restored old container")
+        return False
+
+    try:
+        new_container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        new_container = None
+        error = str(e)
+    else:
+        error = None
+
+    if new_container is None:
+        _remove_failed_update_container(client, cfg["container"])
+        restore_error = _restore_update_backup(container, cfg["container"], was_running)
+        detail = error or "new container was not found after creation"
+        if restore_error:
+            print(
+                f"Failed to update instance {n}: {detail}; "
+                f"also failed to restore old container: {restore_error}"
+            )
+        else:
+            print(f"Failed to update instance {n}: {detail}; restored old container")
+        return False
+
+    if not was_running:
+        try:
+            new_container.stop()
+        except Exception as e:
+            print(f"Warning: updated instance {n} but could not stop it: {e}")
+
+    try:
+        _remove_container(container, force=True)
+    except Exception as e:
+        print(
+            f"Warning: updated instance {n} but could not remove "
+            f"backup {backup_name}: {e}"
+        )
+
+    if port != cfg["port"]:
+        print(
+            f"Updated instance {n} from {image_status} image "
+            f"(port {port} - {cfg['port']} was in use, workspace preserved)"
+        )
+    else:
+        print(
+            f"Updated instance {n} from {image_status} image "
+            f"(port {port}, workspace preserved)"
+        )
+    return True
+
+
 def _start_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to start an instance in a thread."""
     client = get_client()
@@ -944,6 +1125,103 @@ def cmd_restart(args: argparse.Namespace) -> int:
     else:
         client = get_client()
         success = restart_instance(client, instances[0])
+    return 0 if success else 1
+
+
+def _print_update_warning(plans: list[tuple[int, str]]) -> None:
+    rendered = ", ".join(f"{n} ({status})" for n, status in plans)
+    print(f"Warning: recreating instance(s) from current local {CM_IMAGE_REF}.")
+    print("  Workspace bind mounts are preserved.")
+    print("  Files changed inside the container outside /home/me/workspace will be lost.")
+    print(f"  Instance(s): {rendered}")
+
+
+def cmd_update(args: argparse.Namespace) -> int:
+    """Recreate instances from the current local cm:latest image."""
+    try:
+        get_linux_host_identity()
+    except WorkspacePreflightError as e:
+        print(e, file=sys.stderr)
+        return 1
+
+    all_mode = args.instances == ["all"]
+    client = get_client()
+    if all_mode:
+        instances = get_all_instances(client)
+        if not instances:
+            print("No CM instances to update")
+            return 0
+    else:
+        instances = parse_instances(args.instances)
+
+    if not instances:
+        print("No instances specified")
+        return 1
+
+    success = True
+    targets = []
+    for n in instances:
+        cfg = get_instance_config(n)
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError as e:
+            print(e)
+            success = False
+            continue
+        if not container:
+            print(f"Instance {n} does not exist")
+            success = False
+            continue
+        targets.append((n, container))
+
+    if not targets:
+        return 0 if success else 1
+
+    local_image = _get_local_cm_image_metadata(client)
+    if not local_image.id:
+        print(_local_image_unavailable_message(local_image))
+        print(f"Build it first: docker build -t {IMAGE_NAME} .")
+        return 1
+
+    plans: list[tuple[int, str]] = []
+    for n, container in targets:
+        image_status = _image_status(
+            _container_attrs(container).get("Image"),
+            local_image.id,
+        )
+        if image_status == "current" and not args.force:
+            if not all_mode:
+                print(f"Instance {n} image is current (use --force to recreate)")
+            continue
+        if image_status == "unknown" and not args.force:
+            print(f"Instance {n} image status is unknown (use --force to recreate)")
+            if not all_mode:
+                success = False
+            continue
+        plans.append((n, image_status))
+
+    if not plans:
+        if all_mode:
+            print("No stale CM instances to update")
+        else:
+            print("No instances need update")
+        return 0 if success else 1
+
+    _print_update_warning(plans)
+    if not args.yes:
+        try:
+            response = input("Continue? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 1
+        if response != "y":
+            print("Aborted")
+            return 1
+
+    for n, _status in plans:
+        if not update_instance(client, n, force=args.force, local_image=local_image):
+            success = False
+
     return 0 if success else 1
 
 
@@ -2029,7 +2307,7 @@ _cm_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart rm clean ssh list logs inspect pan win kill sync version"
+    local commands="start stop restart update rm clean ssh list logs inspect pan win kill sync version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -2109,6 +2387,16 @@ _cm_completions() {
             instances=$(_cm_complete_instances instances)
             COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
             ;;
+        update)
+            # Flags or multiple instance numbers plus "all" (no duplicates)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--yes -y --force" -- "$cur"))
+            else
+                local instances
+                instances=$(_cm_complete_instances instances)
+                COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
+            fi
+            ;;
         rm)
             # Multiple instance numbers plus "all" for dead containers (no duplicates)
             local instances
@@ -2170,6 +2458,19 @@ def main() -> int:
     p_restart.add_argument("instances", nargs="+", metavar="N",
                            help="Instance number(s): 1, 1-5, 1 3 5, or 'all'")
     p_restart.set_defaults(func=cmd_restart)
+
+    # update
+    p_update = subparsers.add_parser(
+        "update",
+        help="Recreate instance(s) from current local cm:latest",
+    )
+    p_update.add_argument("--yes", "-y", action="store_true",
+                          help="Do not prompt before recreating containers")
+    p_update.add_argument("--force", action="store_true",
+                          help="Recreate even when image status is current or unknown")
+    p_update.add_argument("instances", nargs="+", metavar="N",
+                          help="Instance number(s): 1, 1-5, 1 3 5, or 'all'")
+    p_update.set_defaults(func=cmd_update)
 
     # rm
     p_rm = subparsers.add_parser("rm", help="Remove dead (non-running) container(s)")

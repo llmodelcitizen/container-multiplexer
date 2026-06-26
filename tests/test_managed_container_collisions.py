@@ -112,6 +112,12 @@ class ManagedContainerCollisionTests(unittest.TestCase):
             ("start", self.cm.cmd_start, types.SimpleNamespace(instances=["1"]), "exited"),
             ("stop", self.cm.cmd_stop, types.SimpleNamespace(instances=["1"]), "running"),
             ("restart", self.cm.cmd_restart, types.SimpleNamespace(instances=["1"]), "running"),
+            (
+                "update",
+                self.cm.cmd_update,
+                types.SimpleNamespace(instances=["1"], yes=True, force=False),
+                "running",
+            ),
             ("rm", self.cm.cmd_rm, types.SimpleNamespace(instances=["1"]), "exited"),
             ("ssh", self.cm.cmd_ssh, types.SimpleNamespace(instance=1, identity="/missing/key"), "running"),
             (
