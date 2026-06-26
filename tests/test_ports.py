@@ -47,6 +47,25 @@ class FakeContainer:
         self.status = status
 
 
+class FakeImage:
+    def __init__(self, image_id: str | None = "sha256:aaaaaaaaaaaaaaaa"):
+        self.id = image_id
+        self.attrs = {}
+
+
+class FakeImages:
+    def __init__(self, image_id: str | None = "sha256:aaaaaaaaaaaaaaaa", exc=None):
+        self.image_id = image_id
+        self.exc = exc
+        self.names = []
+
+    def get(self, name):
+        self.names.append(name)
+        if self.exc:
+            raise self.exc
+        return FakeImage(self.image_id)
+
+
 class FakeContainers:
     def __init__(self, container=None, exc=None):
         self.container = container
@@ -69,12 +88,31 @@ class FakeAPI:
 
 
 class FakeClient:
-    def __init__(self, container=None, summaries=None, exc=None):
+    def __init__(
+        self,
+        container=None,
+        summaries=None,
+        exc=None,
+        image_id: str | None = "sha256:aaaaaaaaaaaaaaaa",
+        image_exc=None,
+    ):
         self.containers = FakeContainers(container, exc)
         self.api = FakeAPI(summaries or [])
+        self.images = FakeImages(image_id, image_exc)
 
 
 class PortLookupTests(unittest.TestCase):
+    def run_cmd_list(self, client):
+        original_get_client = cm.get_client
+        cm.get_client = lambda: client
+        try:
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                result = cm.cmd_list(types.SimpleNamespace())
+        finally:
+            cm.get_client = original_get_client
+        return result, stdout.getvalue()
+
     def test_parse_status_extracts_healthy_healthcheck(self):
         self.assertEqual(
             cm.parse_status("Up 2 minutes (healthy)"),
@@ -174,7 +212,60 @@ class PortLookupTests(unittest.TestCase):
 
         self.assertEqual(cm.get_list_ssh_port(client, summary, 2201), 2201)
 
-    def test_cmd_list_prints_actual_summary_port(self):
+    def test_cmd_list_prints_image_header_current_status_and_actual_summary_port(self):
+        client = FakeClient(
+            summaries=[
+                {
+                    "Names": ["/cm-001"],
+                    "State": "running",
+                    "Status": "Up 1 minute",
+                    "ImageID": "sha256:aaaaaaaaaaaaaaaa",
+                    "Ports": [
+                        {"PrivatePort": 22, "PublicPort": 2301, "Type": "tcp"}
+                    ],
+                }
+            ]
+        )
+        result, output = self.run_cmd_list(client)
+
+        self.assertEqual(result, 0)
+        self.assertIn("Image", output.splitlines()[0])
+        self.assertIn("current", output)
+        self.assertIn("2301", output)
+        self.assertNotIn("2201", output)
+
+    def test_cmd_list_prints_stale_image_status(self):
+        client = FakeClient(
+            summaries=[
+                {
+                    "Names": ["/cm-001"],
+                    "State": "running",
+                    "Status": "Up 1 minute",
+                    "ImageID": "sha256:bbbbbbbbbbbbbbbb",
+                    "Ports": [
+                        {"PrivatePort": 22, "PublicPort": 2301, "Type": "tcp"}
+                    ],
+                },
+                {
+                    "Names": ["/cm-002"],
+                    "State": "running",
+                    "Status": "Up 2 minutes",
+                    "ImageID": "sha256:bbbbbbbbbbbbbbbb",
+                    "Ports": [
+                        {"PrivatePort": 22, "PublicPort": 2302, "Type": "tcp"}
+                    ],
+                },
+            ]
+        )
+
+        result, output = self.run_cmd_list(client)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output.count("stale"), 2)
+        self.assertEqual(client.images.names, [cm.CM_IMAGE_REF])
+        self.assertEqual(client.containers.names, [])
+
+    def test_cmd_list_prints_unknown_when_container_image_id_is_missing(self):
         client = FakeClient(
             summaries=[
                 {
@@ -187,18 +278,32 @@ class PortLookupTests(unittest.TestCase):
                 }
             ]
         )
-        original_get_client = cm.get_client
-        cm.get_client = lambda: client
-        try:
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                result = cm.cmd_list(types.SimpleNamespace())
-        finally:
-            cm.get_client = original_get_client
+
+        result, output = self.run_cmd_list(client)
 
         self.assertEqual(result, 0)
-        self.assertIn("2301", stdout.getvalue())
-        self.assertNotIn("2201", stdout.getvalue())
+        self.assertIn("unknown", output)
+
+    def test_cmd_list_prints_unknown_when_local_image_id_is_missing(self):
+        client = FakeClient(
+            image_id=None,
+            summaries=[
+                {
+                    "Names": ["/cm-001"],
+                    "State": "running",
+                    "Status": "Up 1 minute",
+                    "ImageID": "sha256:aaaaaaaaaaaaaaaa",
+                    "Ports": [
+                        {"PrivatePort": 22, "PublicPort": 2301, "Type": "tcp"}
+                    ],
+                }
+            ]
+        )
+
+        result, output = self.run_cmd_list(client)
+
+        self.assertEqual(result, 0)
+        self.assertIn("unknown", output)
 
     def test_cmd_ssh_uses_actual_container_port(self):
         container = FakeContainer(

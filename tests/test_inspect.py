@@ -30,16 +30,33 @@ class FakeAPIError(Exception):
 
 
 class FakeImage:
-    def __init__(self, image_id: str):
+    def __init__(self, image_id: str | None, created: str | None = None):
         self.id = image_id
+        self.attrs = {}
+        if created:
+            self.attrs["Created"] = created
 
 
 class FakeImages:
-    def __init__(self, image_id: str = "sha256:aaaaaaaaaaaaaaaa"):
+    def __init__(
+        self,
+        image_id: str | None = "sha256:aaaaaaaaaaaaaaaa",
+        created: str | None = None,
+        images: dict[str, object] | None = None,
+    ):
         self.image_id = image_id
+        self.created = created
+        self.images = images
+        self.names = []
 
     def get(self, name):
-        return FakeImage(self.image_id)
+        self.names.append(name)
+        if self.images is not None and name in self.images:
+            image = self.images[name]
+            if isinstance(image, Exception):
+                raise image
+            return image
+        return FakeImage(self.image_id, self.created)
 
 
 class FakeContainer:
@@ -92,9 +109,15 @@ class FakeContainers:
 
 
 class FakeClient:
-    def __init__(self, container=None, image_id: str = "sha256:aaaaaaaaaaaaaaaa"):
+    def __init__(
+        self,
+        container=None,
+        image_id: str | None = "sha256:aaaaaaaaaaaaaaaa",
+        image_created: str | None = None,
+        images: dict[str, object] | None = None,
+    ):
         self.containers = FakeContainers(container)
-        self.images = FakeImages(image_id)
+        self.images = FakeImages(image_id, image_created, images)
 
 
 class InspectTests(unittest.TestCase):
@@ -190,6 +213,7 @@ class InspectTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("Instance 1: cm-001", output)
         self.assertIn("Published: 127.0.0.1:2401 -> 22/tcp", output)
+        self.assertIn("Status: current", output)
         self.assertIn("ok   workspace bind mount is present", output)
         self.assertIn("ok   container image matches local cm:latest", output)
         self.assertIn("Live probes:", output)
@@ -223,7 +247,47 @@ class InspectTests(unittest.TestCase):
         result, output = self.run_inspect(container, client=client)
 
         self.assertEqual(result, 0)
+        self.assertIn("Status: stale", output)
         self.assertIn("warn container image (cm:latest) differs from local cm:latest", output)
+
+    def test_cmd_inspect_prints_image_creation_dates_when_available(self):
+        workspace = self.cm.WORKSPACES_DIR / "cm.001"
+        workspace.mkdir(parents=True)
+        image_id = "sha256:aaaaaaaaaaaaaaaa"
+        container = FakeContainer(self.attrs(workspace, image_id=image_id))
+        client = FakeClient(
+            container,
+            images={
+                image_id: FakeImage(image_id, "2026-06-25T10:00:00Z"),
+                self.cm.CM_IMAGE_REF: FakeImage(image_id, "2026-06-26T10:00:00Z"),
+            },
+        )
+
+        result, output = self.run_inspect(container, client=client)
+
+        self.assertEqual(result, 0)
+        self.assertIn("Container image created: 2026-06-25T10:00:00Z", output)
+        self.assertIn("Local cm:latest created: 2026-06-26T10:00:00Z", output)
+
+    def test_cmd_inspect_reports_unknown_when_local_image_is_unavailable(self):
+        workspace = self.cm.WORKSPACES_DIR / "cm.001"
+        workspace.mkdir(parents=True)
+        image_id = "sha256:aaaaaaaaaaaaaaaa"
+        container = FakeContainer(self.attrs(workspace, image_id=image_id))
+        client = FakeClient(
+            container,
+            images={
+                image_id: FakeImage(image_id, "2026-06-25T10:00:00Z"),
+                self.cm.CM_IMAGE_REF: FakeAPIError("image missing"),
+            },
+        )
+
+        result, output = self.run_inspect(container, client=client)
+
+        self.assertEqual(result, 0)
+        self.assertIn("Status: unknown", output)
+        self.assertIn("Local cm:latest image ID: -", output)
+        self.assertIn("warn local image cm:latest unavailable: image missing", output)
 
     def test_cmd_inspect_live_probe_failures_are_warnings(self):
         workspace = self.cm.WORKSPACES_DIR / "cm.001"

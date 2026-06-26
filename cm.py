@@ -34,6 +34,7 @@ SSH_CONTAINER_PORT_PROTO = f"{SSH_CONTAINER_PORT}/tcp"
 MAX_INSTANCE = 499
 VERSION = "dev"
 IMAGE_NAME = "cm"
+CM_IMAGE_REF = f"{IMAGE_NAME}:latest"
 WORKSPACES_DIR = CM_HOME / "workspaces"
 AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
@@ -59,6 +60,18 @@ class UnmanagedContainerNameError(RuntimeError):
             f"Error: Docker name '{name}' is occupied by an unmanaged container "
             f"(missing label {MANAGED_LABEL}={MANAGED_LABEL_VALUE})."
         )
+
+
+class ImageMetadata:
+    def __init__(
+        self,
+        image_id: str | None = None,
+        created: str | None = None,
+        error: str | None = None,
+    ):
+        self.id = image_id
+        self.created = created
+        self.error = error
 
 
 def get_cm_command_path() -> Path:
@@ -1122,6 +1135,7 @@ def cmd_list(args: argparse.Namespace) -> int:
 
     # Low-level API returns lightweight dicts
     containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
+    local_image = _get_local_cm_image_metadata(client)
 
     instances = []
     for c in containers:
@@ -1137,18 +1151,25 @@ def cmd_list(args: argparse.Namespace) -> int:
         state = c.get("State", "unknown")
         status = c.get("Status", "")
         uptime, health = parse_status(status)
+        image_status = _image_status(c.get("ImageID"), local_image.id)
         port = get_list_ssh_port(client, c, BASE_PORT + n)
-        instances.append((n, name, state, uptime, health, port))
+        instances.append((n, name, state, uptime, health, image_status, port))
 
     if not instances:
         print("No CM instances found")
         return 0
 
-    print(f"{'#':<4} {'Container':<12} {'Status':<12} {'Uptime':<16} {'Health':<12} {'Port':<8} {'SSH'}")
-    print("-" * 88)
-    for n, name, state, uptime, health, port in sorted(instances):
+    print(
+        f"{'#':<4} {'Container':<12} {'Status':<12} {'Uptime':<16} "
+        f"{'Health':<12} {'Image':<8} {'Port':<8} {'SSH'}"
+    )
+    print("-" * 97)
+    for n, name, state, uptime, health, image_status, port in sorted(instances):
         ssh_cmd = f"cm ssh {n}" if state == "running" else "-"
-        print(f"{n:<4} {name:<12} {state:<12} {uptime:<16} {health:<12} {port:<8} {ssh_cmd}")
+        print(
+            f"{n:<4} {name:<12} {state:<12} {uptime:<16} {health:<12} "
+            f"{image_status:<8} {port:<8} {ssh_cmd}"
+        )
 
     return 0
 
@@ -1373,6 +1394,12 @@ def _get_workspace_mount(attrs: dict, workspace: Path) -> dict | None:
     return None
 
 
+def _string_or_none(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
 def _image_id(image: object) -> str | None:
     image_id = getattr(image, "id", None)
     if image_id:
@@ -1383,6 +1410,37 @@ def _image_id(image: object) -> str | None:
     return None
 
 
+def _image_metadata(image: object) -> ImageMetadata:
+    attrs = getattr(image, "attrs", {})
+    created = attrs.get("Created") if isinstance(attrs, dict) else None
+    return ImageMetadata(image_id=_image_id(image), created=_string_or_none(created))
+
+
+def _get_image_metadata(client, image_ref: str) -> ImageMetadata:
+    try:
+        image = client.images.get(image_ref)
+    except Exception as e:
+        return ImageMetadata(error=str(e))
+    return _image_metadata(image)
+
+
+def _get_local_cm_image_metadata(client) -> ImageMetadata:
+    return _get_image_metadata(client, CM_IMAGE_REF)
+
+
+def _get_container_image_metadata(client, attrs: dict) -> ImageMetadata:
+    container_image_id = _string_or_none(attrs.get("Image"))
+    if not container_image_id:
+        return ImageMetadata()
+
+    image_metadata = _get_image_metadata(client, container_image_id)
+    return ImageMetadata(
+        image_id=container_image_id,
+        created=image_metadata.created,
+        error=image_metadata.error,
+    )
+
+
 def _normalized_id(value: object) -> str | None:
     if not value:
         return None
@@ -1390,6 +1448,16 @@ def _normalized_id(value: object) -> str | None:
     if text.startswith("sha256:"):
         text = text.removeprefix("sha256:")
     return text
+
+
+def _image_status(container_image_id: object, local_image_id: object) -> str:
+    container_normalized = _normalized_id(container_image_id)
+    local_normalized = _normalized_id(local_image_id)
+    if not container_normalized or not local_normalized:
+        return "unknown"
+    if container_normalized == local_normalized:
+        return "current"
+    return "stale"
 
 
 def _check_host_tcp(host: str, port: int, timeout: float = 1.0) -> tuple[bool, str]:
@@ -1470,29 +1538,32 @@ def _identity_checks(container, n: int) -> list[tuple[str, str]]:
     return checks
 
 
-def _image_checks(client, attrs: dict) -> list[tuple[str, str]]:
+def _image_checks(
+    container_image: ImageMetadata,
+    local_image: ImageMetadata,
+    container_image_ref: object,
+) -> list[tuple[str, str]]:
     checks = []
-    container_image_id = attrs.get("Image")
-    container_image_ref = _nested(attrs, "Config", "Image")
-    try:
-        local_image = client.images.get(IMAGE_NAME)
-    except Exception as e:
-        checks.append(("warn", f"local image {IMAGE_NAME}:latest unavailable: {e}"))
-        return checks
+    status = _image_status(container_image.id, local_image.id)
 
-    local_image_id = _image_id(local_image)
-    if not container_image_id or not local_image_id:
+    if status == "unknown":
+        if local_image.error:
+            checks.append((
+                "warn",
+                f"local image {CM_IMAGE_REF} unavailable: {local_image.error}",
+            ))
+            return checks
         checks.append(("skip", "cannot compare container image to local cm:latest"))
         return checks
 
-    if _normalized_id(container_image_id) == _normalized_id(local_image_id):
-        checks.append(("ok", f"container image matches local {IMAGE_NAME}:latest"))
+    if status == "current":
+        checks.append(("ok", f"container image matches local {CM_IMAGE_REF}"))
     else:
         ref = f" ({container_image_ref})" if container_image_ref else ""
         checks.append((
             "warn",
-            f"container image{ref} differs from local {IMAGE_NAME}:latest "
-            f"({_short_id(container_image_id)} != {_short_id(local_image_id)})",
+            f"container image{ref} differs from local {CM_IMAGE_REF} "
+            f"({_short_id(container_image.id)} != {_short_id(local_image.id)})",
         ))
     return checks
 
@@ -1631,6 +1702,10 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     host_ip, ssh_port = get_ssh_binding_from_attrs(attrs)
     workspace = cfg["workspace"]
     mount = _get_workspace_mount(attrs, workspace)
+    container_image_ref = _nested(attrs, "Config", "Image")
+    container_image = _get_container_image_metadata(client, attrs)
+    local_image = _get_local_cm_image_metadata(client)
+    image_status = _image_status(container_image.id, local_image.id)
 
     print(f"Instance {args.instance}: {cfg['container']}")
     print("Summary:")
@@ -1662,8 +1737,14 @@ def cmd_inspect(args: argparse.Namespace) -> int:
         print("  Mount: -")
 
     print("Image:")
-    print(f"  Container ref: {_display(_nested(attrs, 'Config', 'Image'))}")
-    print(f"  Container image: {_short_id(attrs.get('Image'))}")
+    print(f"  Status: {image_status}")
+    print(f"  Container ref: {_display(container_image_ref)}")
+    print(f"  Container image ID: {_short_id(container_image.id)}")
+    if container_image.created:
+        print(f"  Container image created: {_display(container_image.created)}")
+    print(f"  Local {CM_IMAGE_REF} image ID: {_short_id(local_image.id)}")
+    if local_image.created:
+        print(f"  Local {CM_IMAGE_REF} created: {_display(local_image.created)}")
 
     checks: list[tuple[str, str]] = []
     if ssh_port is None:
@@ -1689,7 +1770,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     else:
         checks.append(("ok", "workspace bind mount is present"))
 
-    checks.extend(_image_checks(client, attrs))
+    checks.extend(_image_checks(container_image, local_image, container_image_ref))
     checks.extend(_identity_checks(container, args.instance))
 
     health_output = _get_last_health_output(attrs)
