@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import socket
 import subprocess
 import sys
 import os
@@ -367,6 +368,47 @@ def get_container_ssh_port(container, fallback_port: int | None = None) -> int |
     """Get a container's published SSH port, falling back when unavailable."""
     port = get_ssh_port_from_attrs(getattr(container, "attrs", None))
     return fallback_port if port is None else port
+
+
+def _get_ssh_binding_from_bindings(port_bindings: object) -> tuple[str | None, int | None]:
+    """Get the published host binding for the container SSH port."""
+    if not isinstance(port_bindings, dict):
+        return (None, None)
+
+    bindings = port_bindings.get(SSH_CONTAINER_PORT_PROTO)
+    if isinstance(bindings, dict):
+        bindings = [bindings]
+    if not isinstance(bindings, list):
+        return (None, None)
+
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            continue
+        host_port = _parse_port(binding.get("HostPort"))
+        if host_port is None:
+            continue
+        host_ip = binding.get("HostIp") or "0.0.0.0"
+        return (str(host_ip), host_port)
+
+    return (None, None)
+
+
+def get_ssh_binding_from_attrs(attrs: object) -> tuple[str | None, int | None]:
+    """Get the published host IP and port from Docker inspect attrs."""
+    if not isinstance(attrs, dict):
+        return (None, None)
+
+    network_settings = attrs.get("NetworkSettings", {})
+    if isinstance(network_settings, dict):
+        host_ip, port = _get_ssh_binding_from_bindings(network_settings.get("Ports", {}))
+        if port is not None:
+            return (host_ip, port)
+
+    host_config = attrs.get("HostConfig", {})
+    if isinstance(host_config, dict):
+        return _get_ssh_binding_from_bindings(host_config.get("PortBindings", {}))
+
+    return (None, None)
 
 
 def get_list_ssh_port(client: docker.DockerClient, container_summary: dict,
@@ -1214,6 +1256,476 @@ def cmd_complete(args: argparse.Namespace) -> int:
     return 0
 
 
+def _container_attrs(container) -> dict:
+    """Return Docker inspect attrs from a container object."""
+    attrs = getattr(container, "attrs", {})
+    return attrs if isinstance(attrs, dict) else {}
+
+
+def _nested(attrs: dict, *keys: str) -> object | None:
+    value: object = attrs
+    for key in keys:
+        if not isinstance(value, dict):
+            return None
+        value = value.get(key)
+    return value
+
+
+def _short_id(value: object, length: int = 12) -> str:
+    if not value:
+        return "-"
+    text = str(value)
+    if text.startswith("sha256:"):
+        text = text.removeprefix("sha256:")
+    return text[:length]
+
+
+def _display(value: object) -> str:
+    if value is None or value == "":
+        return "-"
+    text = str(value)
+    if text == "0001-01-01T00:00:00Z":
+        return "-"
+    return text
+
+
+def _one_line(value: object, limit: int = 160) -> str:
+    text = _display(value).replace("\r", " ").replace("\n", " ").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1] + "..."
+
+
+def _decode_output(output: object) -> str:
+    if output is None:
+        return ""
+    if isinstance(output, tuple):
+        parts = []
+        for part in output:
+            decoded = _decode_output(part)
+            if decoded:
+                parts.append(decoded)
+        return "\n".join(parts)
+    if isinstance(output, bytes):
+        return output.decode("utf-8", errors="replace")
+    return str(output)
+
+
+def _get_exec_result(result: object) -> tuple[int | None, str]:
+    if isinstance(result, tuple) and len(result) == 2:
+        return (result[0], _decode_output(result[1]))
+    exit_code = getattr(result, "exit_code", None)
+    output = getattr(result, "output", None)
+    return (exit_code, _decode_output(output))
+
+
+def _exec_probe(container, command: str, user: str | None = None) -> tuple[str, str]:
+    try:
+        result = container.exec_run(["sh", "-lc", f"timeout 3s {command}"], user=user)
+    except Exception as e:
+        return ("warn", f"exec failed: {e}")
+
+    exit_code, output = _get_exec_result(result)
+    text = output.strip()
+    if exit_code == 0:
+        return ("ok", _one_line(text))
+    detail = f"exit {exit_code}" if exit_code is not None else "unknown exit"
+    if text:
+        detail = f"{detail}: {_one_line(text)}"
+    return ("warn", detail)
+
+
+def _get_health(attrs: dict) -> dict:
+    health = _nested(attrs, "State", "Health")
+    return health if isinstance(health, dict) else {}
+
+
+def _get_health_status(attrs: dict) -> str:
+    status = _get_health(attrs).get("Status")
+    return str(status) if status else "-"
+
+
+def _get_last_health_output(attrs: dict) -> str:
+    logs = _get_health(attrs).get("Log", [])
+    if not isinstance(logs, list):
+        return "-"
+    for entry in reversed(logs):
+        if not isinstance(entry, dict):
+            continue
+        output = entry.get("Output")
+        if output:
+            return _one_line(output)
+    return "-"
+
+
+def _get_workspace_mount(attrs: dict, workspace: Path) -> dict | None:
+    mounts = attrs.get("Mounts", [])
+    if not isinstance(mounts, list):
+        return None
+    workspace_text = str(workspace)
+    for mount in mounts:
+        if not isinstance(mount, dict):
+            continue
+        if mount.get("Destination") == "/home/me/workspace":
+            return mount
+        if mount.get("Source") == workspace_text:
+            return mount
+    return None
+
+
+def _image_id(image: object) -> str | None:
+    image_id = getattr(image, "id", None)
+    if image_id:
+        return str(image_id)
+    attrs = getattr(image, "attrs", {})
+    if isinstance(attrs, dict) and attrs.get("Id"):
+        return str(attrs["Id"])
+    return None
+
+
+def _normalized_id(value: object) -> str | None:
+    if not value:
+        return None
+    text = str(value)
+    if text.startswith("sha256:"):
+        text = text.removeprefix("sha256:")
+    return text
+
+
+def _check_host_tcp(host: str, port: int, timeout: float = 1.0) -> tuple[bool, str]:
+    connect_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    try:
+        with socket.create_connection((connect_host, port), timeout=timeout):
+            return (True, f"{connect_host}:{port} reachable")
+    except OSError as e:
+        return (False, f"{connect_host}:{port} not reachable: {e}")
+
+
+def _path_status(path: Path, require_nonempty: bool = False) -> tuple[str, str]:
+    if not path.exists():
+        return ("warn", f"missing: {path}")
+    if not path.is_file():
+        return ("warn", f"not a file: {path}")
+    if require_nonempty:
+        try:
+            if path.stat().st_size == 0:
+                return ("warn", f"empty: {path}")
+        except OSError as e:
+            return ("warn", f"cannot stat {path}: {e}")
+    if not os.access(path, os.R_OK):
+        return ("warn", f"not readable: {path}")
+    return ("ok", f"{path}")
+
+
+def _workspace_host_checks(workspace: Path) -> list[tuple[str, str]]:
+    checks = []
+    if not workspace.exists():
+        checks.append(("warn", f"workspace missing on host: {workspace}"))
+        return checks
+    if not workspace.is_dir():
+        checks.append(("warn", f"workspace path is not a directory: {workspace}"))
+        return checks
+    if os.access(workspace, os.W_OK):
+        checks.append(("ok", f"workspace host path is writable: {workspace}"))
+    else:
+        checks.append(("warn", f"workspace host path is not writable: {workspace}"))
+    return checks
+
+
+def _identity_checks(container, n: int) -> list[tuple[str, str]]:
+    checks = []
+    env = get_container_env(container)
+    container_uid = env.get(LINUX_HOST_UID_ENV)
+    container_gid = env.get(LINUX_HOST_GID_ENV)
+    configured = (
+        f"{container_uid or str(CONTAINER_DEFAULT_UID)}:"
+        f"{container_gid or str(CONTAINER_DEFAULT_GID)}"
+    )
+
+    if not is_native_linux_host():
+        checks.append(("ok", f"host UID/GID remap not active here; container {configured}"))
+        return checks
+
+    if not all(hasattr(os, name) for name in ("getuid", "geteuid", "getgid")):
+        checks.append(("skip", "host UID/GID unavailable"))
+        return checks
+
+    uid = os.getuid()
+    euid = os.geteuid()
+    gid = os.getgid()
+    if uid == 0 or euid == 0:
+        checks.append(("warn", "running as root; start/restart reject this on native Linux"))
+        return checks
+
+    if container_uid == str(uid) and container_gid == str(gid):
+        checks.append(("ok", f"container UID/GID matches current host {uid}:{gid}"))
+    elif container_uid is None and container_gid is None and uid == CONTAINER_DEFAULT_UID:
+        checks.append(("ok", f"container default UID/GID is compatible with host {uid}:{gid}"))
+    else:
+        checks.append((
+            "warn",
+            f"instance {n} was created for UID/GID {configured}, "
+            f"current host is {uid}:{gid}",
+        ))
+    return checks
+
+
+def _image_checks(client, attrs: dict) -> list[tuple[str, str]]:
+    checks = []
+    container_image_id = attrs.get("Image")
+    container_image_ref = _nested(attrs, "Config", "Image")
+    try:
+        local_image = client.images.get(IMAGE_NAME)
+    except Exception as e:
+        checks.append(("warn", f"local image {IMAGE_NAME}:latest unavailable: {e}"))
+        return checks
+
+    local_image_id = _image_id(local_image)
+    if not container_image_id or not local_image_id:
+        checks.append(("skip", "cannot compare container image to local cm:latest"))
+        return checks
+
+    if _normalized_id(container_image_id) == _normalized_id(local_image_id):
+        checks.append(("ok", f"container image matches local {IMAGE_NAME}:latest"))
+    else:
+        ref = f" ({container_image_ref})" if container_image_ref else ""
+        checks.append((
+            "warn",
+            f"container image{ref} differs from local {IMAGE_NAME}:latest "
+            f"({_short_id(container_image_id)} != {_short_id(local_image_id)})",
+        ))
+    return checks
+
+
+def _get_recent_logs(container, lines: int) -> tuple[list[str], str | None]:
+    if lines <= 0:
+        return ([], None)
+    try:
+        raw = container.logs(tail=lines)
+    except Exception as e:
+        return ([], str(e))
+    text = _decode_output(raw).rstrip()
+    if not text:
+        return ([], None)
+    return (text.splitlines(), None)
+
+
+def _print_checks(title: str, checks: list[tuple[str, str]]) -> None:
+    if not checks:
+        return
+    print(f"{title}:")
+    for status, message in checks:
+        print(f"  {status:<4} {message}")
+
+
+def _print_verbose(attrs: dict) -> None:
+    print("Verbose:")
+
+    ports = _nested(attrs, "NetworkSettings", "Ports")
+    if isinstance(ports, dict) and ports:
+        print("  Ports:")
+        for private, bindings in sorted(ports.items()):
+            if not bindings:
+                print(f"    {private}: -")
+                continue
+            if isinstance(bindings, dict):
+                bindings = [bindings]
+            if not isinstance(bindings, list):
+                print(f"    {private}: {bindings}")
+                continue
+            rendered = []
+            for binding in bindings:
+                if isinstance(binding, dict):
+                    rendered.append(
+                        f"{binding.get('HostIp', '0.0.0.0')}:{binding.get('HostPort', '-')}"
+                    )
+            print(f"    {private}: {', '.join(rendered) if rendered else '-'}")
+
+    mounts = attrs.get("Mounts", [])
+    if isinstance(mounts, list) and mounts:
+        print("  Mounts:")
+        for mount in mounts:
+            if not isinstance(mount, dict):
+                continue
+            source = mount.get("Source", "-")
+            destination = mount.get("Destination", "-")
+            mode = mount.get("Mode") or ("rw" if mount.get("RW") else "ro")
+            print(f"    {destination} <- {source} ({mode})")
+
+    env = _nested(attrs, "Config", "Env")
+    if isinstance(env, list):
+        selected = [
+            item for item in env
+            if isinstance(item, str)
+            and item.split("=", 1)[0] in (LINUX_HOST_UID_ENV, LINUX_HOST_GID_ENV)
+        ]
+        if selected:
+            print("  Environment:")
+            for item in selected:
+                print(f"    {item}")
+
+    health_logs = _get_health(attrs).get("Log", [])
+    if isinstance(health_logs, list) and health_logs:
+        print("  Health history:")
+        for entry in health_logs[-5:]:
+            if not isinstance(entry, dict):
+                continue
+            end = _display(entry.get("End"))
+            exit_code = _display(entry.get("ExitCode"))
+            output = _one_line(entry.get("Output"))
+            print(f"    exit {exit_code} at {end}: {output}")
+
+
+def _live_inspect_checks(container) -> list[tuple[str, str]]:
+    checks = []
+
+    status, detail = _exec_probe(container, "id me")
+    checks.append((status, f"user me: {detail}"))
+
+    status, detail = _exec_probe(
+        container,
+        "test -d /home/me/workspace && test -w /home/me/workspace "
+        "&& printf writable",
+        user="me",
+    )
+    checks.append((status, f"workspace writable as me: {detail}"))
+
+    status, detail = _exec_probe(
+        container,
+        "stat -c '%U:%G %a %s bytes' /home/me/.ssh/authorized_keys",
+    )
+    checks.append((status, f"authorized_keys in container: {detail}"))
+
+    status, detail = _exec_probe(
+        container,
+        "df -h / /home/me/workspace 2>/dev/null",
+    )
+    checks.append((status, f"disk usage: {detail}"))
+
+    return checks
+
+
+def cmd_inspect(args: argparse.Namespace) -> int:
+    """Inspect a CM instance for common development-environment problems."""
+    if args.logs < 0:
+        print("Error: --logs must be 0 or greater")
+        return 1
+
+    client = get_client()
+    cfg = get_instance_config(args.instance)
+
+    try:
+        container = get_managed_container(client, cfg["container"])
+    except UnmanagedContainerNameError as e:
+        print(e)
+        return 1
+    if not container:
+        print(f"Instance {args.instance} does not exist")
+        return 1
+
+    docker_sdk = get_docker_sdk()
+    try:
+        if hasattr(container, "reload"):
+            container.reload()
+    except docker_sdk.errors.APIError as e:
+        print(f"Warning: could not refresh container metadata: {e}")
+
+    attrs = _container_attrs(container)
+    state = _nested(attrs, "State", "Status") or getattr(container, "status", "unknown")
+    health = _get_health_status(attrs)
+    container_id = attrs.get("Id") or getattr(container, "id", None)
+    host_ip, ssh_port = get_ssh_binding_from_attrs(attrs)
+    workspace = cfg["workspace"]
+    mount = _get_workspace_mount(attrs, workspace)
+
+    print(f"Instance {args.instance}: {cfg['container']}")
+    print("Summary:")
+    print(f"  Container ID: {_short_id(container_id)}")
+    print(f"  State: {_display(state)}")
+    print(f"  Health: {health}")
+    print(f"  Restart count: {_display(attrs.get('RestartCount'))}")
+    print(f"  Created: {_display(attrs.get('Created'))}")
+    print(f"  Started: {_display(_nested(attrs, 'State', 'StartedAt'))}")
+    print(f"  Finished: {_display(_nested(attrs, 'State', 'FinishedAt'))}")
+    print(f"  Exit code: {_display(_nested(attrs, 'State', 'ExitCode'))}")
+    error = _nested(attrs, "State", "Error")
+    if error:
+        print(f"  Error: {_one_line(error)}")
+
+    print("SSH:")
+    if ssh_port is None:
+        print(f"  Published: - (expected fallback {cfg['port']})")
+    else:
+        print(f"  Published: {host_ip}:{ssh_port} -> {SSH_CONTAINER_PORT_PROTO}")
+    print(f"  Command: cm ssh {args.instance}")
+
+    print("Workspace:")
+    print(f"  Host path: {workspace}")
+    if mount:
+        mode = mount.get("Mode") or ("rw" if mount.get("RW") else "ro")
+        print(f"  Mount: {mount.get('Source', '-')} -> {mount.get('Destination', '-')} ({mode})")
+    else:
+        print("  Mount: -")
+
+    print("Image:")
+    print(f"  Container ref: {_display(_nested(attrs, 'Config', 'Image'))}")
+    print(f"  Container image: {_short_id(attrs.get('Image'))}")
+
+    checks: list[tuple[str, str]] = []
+    if ssh_port is None:
+        checks.append(("warn", f"SSH port is not published; expected {cfg['port']}"))
+    else:
+        checks.append(("ok", f"SSH port is published on {host_ip}:{ssh_port}"))
+        if state == "running":
+            reachable, detail = _check_host_tcp(host_ip or "127.0.0.1", ssh_port)
+            checks.append(("ok" if reachable else "warn", f"SSH TCP check: {detail}"))
+        else:
+            checks.append(("skip", "SSH TCP check skipped; container is not running"))
+
+    identity = Path("~/.ssh/cm_ed25519").expanduser()
+    status, detail = _path_status(identity)
+    checks.append((status, f"SSH private key: {detail}"))
+
+    status, detail = _path_status(AUTHORIZED_KEYS_PATH, require_nonempty=True)
+    checks.append((status, f"authorized_keys source: {detail}"))
+
+    checks.extend(_workspace_host_checks(workspace))
+    if mount is None:
+        checks.append(("warn", "workspace bind mount is missing"))
+    else:
+        checks.append(("ok", "workspace bind mount is present"))
+
+    checks.extend(_image_checks(client, attrs))
+    checks.extend(_identity_checks(container, args.instance))
+
+    health_output = _get_last_health_output(attrs)
+    if health_output != "-":
+        checks.append(("ok" if health == "healthy" else "warn",
+                       f"last healthcheck output: {health_output}"))
+
+    _print_checks("Checks", checks)
+
+    if args.no_exec:
+        _print_checks("Live probes", [("skip", "--no-exec was passed")])
+    elif state != "running":
+        _print_checks("Live probes", [("skip", "container is not running")])
+    else:
+        _print_checks("Live probes", _live_inspect_checks(container))
+
+    logs, log_error = _get_recent_logs(container, args.logs)
+    if log_error:
+        _print_checks("Recent logs", [("warn", f"could not read logs: {log_error}")])
+    elif logs:
+        print("Recent logs:")
+        for line in logs[-args.logs:]:
+            print(f"  {line}")
+
+    if args.verbose:
+        _print_verbose(attrs)
+
+    return 0
+
+
 def cmd_logs(args: argparse.Namespace) -> int:
     """Show logs for an instance."""
     client = get_client()
@@ -1442,7 +1954,7 @@ _cm_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart rm clean ssh list logs pan win kill sync version"
+    local commands="start stop restart rm clean ssh list logs inspect pan win kill sync version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -1483,6 +1995,16 @@ _cm_completions() {
             local instances
             instances=$(_cm_complete_instances running)
             COMPREPLY=($(compgen -W "$instances" -- "$cur"))
+            ;;
+        inspect)
+            # Flags or single instance number (any known instance)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--no-exec --verbose --logs" -- "$cur"))
+            else
+                local instances
+                instances=$(_cm_complete_instances instances)
+                COMPREPLY=($(compgen -W "$instances" -- "$cur"))
+            fi
             ;;
         start)
             # Multiple instance numbers (no duplicates)
@@ -1601,6 +2123,18 @@ def main() -> int:
     p_logs.add_argument("instance", type=int, metavar="N",
                         help="Instance number")
     p_logs.set_defaults(func=cmd_logs)
+
+    # inspect
+    p_inspect = subparsers.add_parser("inspect", help="Inspect an instance")
+    p_inspect.add_argument("--no-exec", action="store_true",
+                           help="Skip live checks that run commands in the container")
+    p_inspect.add_argument("--verbose", action="store_true",
+                           help="Show mounts, port bindings, env subset, and health history")
+    p_inspect.add_argument("--logs", type=int, default=0, metavar="LINES",
+                           help="Recent Docker log lines to show (default: 0)")
+    p_inspect.add_argument("instance", type=int, metavar="N",
+                           help="Instance number")
+    p_inspect.set_defaults(func=cmd_inspect)
 
     # pan
     p_panes = subparsers.add_parser("pan", help="Open tmux session with SSH panes")

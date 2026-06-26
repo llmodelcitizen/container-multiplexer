@@ -266,6 +266,7 @@ cm clean            # Prompt to remove orphaned workspace directories
 cm list             # List all instances with status, health, port, and SSH command
 cm ssh 1            # SSH into an individual instance
 cm logs 1           # Stream container logs like "docker logs -f"
+cm inspect 1        # Diagnose SSH, health, workspace, image, and UID/GID issues
 
 # Tmux sessions     (for working with many container instances)
 cm pan 1-9          # Use split panes, each SSH'd to a running instance

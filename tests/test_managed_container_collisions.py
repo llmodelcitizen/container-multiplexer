@@ -114,6 +114,12 @@ class ManagedContainerCollisionTests(unittest.TestCase):
             ("restart", self.cm.cmd_restart, types.SimpleNamespace(instances=["1"]), "running"),
             ("rm", self.cm.cmd_rm, types.SimpleNamespace(instances=["1"]), "exited"),
             ("ssh", self.cm.cmd_ssh, types.SimpleNamespace(instance=1, identity="/missing/key"), "running"),
+            (
+                "inspect",
+                self.cm.cmd_inspect,
+                types.SimpleNamespace(instance=1, no_exec=False, verbose=False, logs=10),
+                "running",
+            ),
         ]
 
         for name, func, args, status in cases:
