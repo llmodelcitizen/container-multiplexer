@@ -1596,12 +1596,6 @@ def _live_inspect_checks(container) -> list[tuple[str, str]]:
     )
     checks.append((status, f"authorized_keys in container: {detail}"))
 
-    status, detail = _exec_probe(
-        container,
-        "df -h / /home/me/workspace 2>/dev/null",
-    )
-    checks.append((status, f"disk usage: {detail}"))
-
     return checks
 
 

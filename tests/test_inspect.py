@@ -72,8 +72,6 @@ class FakeContainer:
             output = b"writable"
         elif "stat -c" in command:
             output = b"me:me 600 90 bytes\n"
-        elif "df -h" in command:
-            output = b"Filesystem Size Used Avail Use% Mounted on\n/dev/root 64G 2G 62G 4% /\n"
         else:
             output = b"ok\n"
         return types.SimpleNamespace(exit_code=0, output=output)
@@ -196,7 +194,12 @@ class InspectTests(unittest.TestCase):
         self.assertIn("ok   container image matches local cm:latest", output)
         self.assertIn("Live probes:", output)
         self.assertIn("workspace writable as me: writable", output)
-        self.assertEqual(len(container.exec_calls), 4)
+        self.assertNotIn("disk usage:", output)
+        self.assertEqual(len(container.exec_calls), 3)
+        self.assertFalse(any(
+            "df " in (cmd[-1] if isinstance(cmd, list) else str(cmd))
+            for cmd, _user in container.exec_calls
+        ))
         self.assertNotIn("Recent logs:", output)
         self.assertEqual(container.log_tails, [])
 
