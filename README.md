@@ -248,7 +248,11 @@ command -v cm &>/dev/null && source <(cm autocomplete)
 
 ## Commands
 
-Use `cm <command> -h` for command-specific help. Commands that accept instance lists (`start`, `stop`, `restart`, `update`, `rm`, `pan`, and `win`) support single numbers, ranges like `1-5`, and repeated values like `1 3 5`; those list-style instance numbers must be `1` through `499`. `stop`, `restart`, `update`, and `rm` also accept `all`. `ssh` and `logs` accept one instance number.
+Use `cm <command> -h` for command-specific help. 
+
+Commands that accept instance lists (`start`, `stop`, `restart`, `update`, `rm`, `pan`, and `win`) support single numbers, ranges like `1-5`, and repeated values like `1 3 5`.
+
+`stop`, `restart`, `update`, and `rm` also accept `all`. `ssh` and `logs` accept one instance number.
 
 ```bash
 # Start/stop        (containers persist when stopped, like docker)
