@@ -36,6 +36,11 @@ MAX_INSTANCE = 499
 VERSION = "dev"
 IMAGE_NAME = "cm"
 CM_IMAGE_REF = f"{IMAGE_NAME}:latest"
+BASE_IMAGE_REF = "cm-base:latest"
+IMAGE_BUILD_COMMANDS = (
+    f"docker build -t {BASE_IMAGE_REF} -f Dockerfile.base .",
+    f"docker build -t {CM_IMAGE_REF} .",
+)
 WORKSPACES_DIR = CM_HOME / "workspaces"
 AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
@@ -73,6 +78,19 @@ class ImageMetadata:
         self.id = image_id
         self.created = created
         self.error = error
+
+
+def _cm_image_build_hint() -> str:
+    commands = "\n".join(f"  {command}" for command in IMAGE_BUILD_COMMANDS)
+    return f"Build it first:\n{commands}"
+
+
+def _cm_image_missing_message() -> str:
+    return f"Image '{CM_IMAGE_REF}' not found.\n{_cm_image_build_hint()}"
+
+
+def _print_cm_image_build_hint() -> None:
+    print(_cm_image_build_hint())
 
 
 def get_cm_command_path() -> Path:
@@ -685,8 +703,7 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
     try:
         client.images.get(IMAGE_NAME)
     except docker_sdk.errors.NotFound:
-        print(f"Image '{IMAGE_NAME}' not found. Build it first:")
-        print(f"  docker build -t {IMAGE_NAME} .")
+        print(_cm_image_missing_message())
         return False
 
     # Create and start new container
@@ -846,7 +863,7 @@ def update_instance(
     local_image = local_image or _get_local_cm_image_metadata(client)
     if not local_image.id:
         print(_local_image_unavailable_message(local_image))
-        print(f"Build it first: docker build -t {IMAGE_NAME} .")
+        _print_cm_image_build_hint()
         return False
 
     attrs = _container_attrs(container)
@@ -964,7 +981,7 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
         try:
             client.images.get(IMAGE_NAME)
         except docker_sdk.errors.NotFound:
-            return (n, False, f"Image '{IMAGE_NAME}' not found")
+            return (n, False, _cm_image_missing_message())
 
         port, error = try_start_container(client, n, cfg)
         if error:
@@ -1025,7 +1042,7 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
         try:
             client.images.get(IMAGE_NAME)
         except docker_sdk.errors.NotFound:
-            return (n, False, f"Image '{IMAGE_NAME}' not found")
+            return (n, False, _cm_image_missing_message())
 
         port, error = try_start_container(client, n, cfg)
         if error:
@@ -1180,7 +1197,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     local_image = _get_local_cm_image_metadata(client)
     if not local_image.id:
         print(_local_image_unavailable_message(local_image))
-        print(f"Build it first: docker build -t {IMAGE_NAME} .")
+        _print_cm_image_build_hint()
         return 1
 
     plans: list[tuple[int, str]] = []

@@ -329,7 +329,8 @@ class UpdateTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertIn("has no readable image ID", output)
-        self.assertIn("docker build -t cm .", output)
+        self.assertIn("docker build -t cm-base:latest -f Dockerfile.base .", output)
+        self.assertIn("docker build -t cm:latest .", output)
         self.assertEqual(client.containers.run_calls, [])
         self.assertEqual(old_container.renames, [])
 
