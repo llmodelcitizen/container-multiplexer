@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -8,6 +9,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RuntimeImageTests(unittest.TestCase):
+    def test_entrypoint_is_valid_bash(self):
+        result = subprocess.run(
+            ["bash", "-n", str(ROOT / "entrypoint.sh")],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_entrypoint_execs_sshd_in_foreground(self):
         entrypoint = (ROOT / "entrypoint.sh").read_text()
 
@@ -33,6 +44,44 @@ class RuntimeImageTests(unittest.TestCase):
         self.assertIn("CM_HOST_GID", entrypoint)
         self.assertIn("usermod -u", entrypoint)
         self.assertIn('sudo -u me test -w "$WORKSPACE_DIR"', entrypoint)
+
+    def test_entrypoint_validates_uid_gid_before_remapping(self):
+        entrypoint = (ROOT / "entrypoint.sh").read_text()
+
+        self.assertLess(
+            entrypoint.index('[[ "${CM_HOST_UID:-}" =~ ^[1-9][0-9]*$ ]]'),
+            entrypoint.index('current_uid="$(id -u me)"'),
+        )
+        self.assertLess(entrypoint.index("groupmod -g"), entrypoint.index("usermod -u"))
+        self.assertLess(entrypoint.index("usermod -u"), entrypoint.index('chown me:"$(id -gn me)" /home/me'))
+
+    def test_entrypoint_handles_gid_collision_before_groupmod(self):
+        entrypoint = (ROOT / "entrypoint.sh").read_text()
+
+        self.assertLess(
+            entrypoint.index('target_group="$(getent group "$CM_HOST_GID"'),
+            entrypoint.index('groupmod -g "$CM_HOST_GID" me'),
+        )
+        self.assertIn('usermod -g "$target_group" me', entrypoint)
+
+    def test_entrypoint_rejects_uid_collision_and_installs_authorized_keys(self):
+        entrypoint = (ROOT / "entrypoint.sh").read_text()
+
+        self.assertLess(
+            entrypoint.index('target_user="$(getent passwd "$CM_HOST_UID"'),
+            entrypoint.index('usermod -u "$CM_HOST_UID" me'),
+        )
+        self.assertIn("UID is already used by $target_user", entrypoint)
+        self.assertLess(
+            entrypoint.index('install -d -o me -g "$ME_GROUP" -m 700 "$SSH_DIR"'),
+            entrypoint.index('install -o me -g "$ME_GROUP" -m 600 "$AUTHORIZED_KEYS_SRC" "$AUTHORIZED_KEYS_DST"'),
+        )
+
+    def test_dockerfile_runtime_contract_order(self):
+        dockerfile = (ROOT / "Dockerfile").read_text()
+
+        self.assertLess(dockerfile.index("COPY --chmod=755 entrypoint.sh"), dockerfile.index("ENTRYPOINT"))
+        self.assertLess(dockerfile.index("HEALTHCHECK"), dockerfile.index("ENTRYPOINT"))
 
 
 if __name__ == "__main__":
