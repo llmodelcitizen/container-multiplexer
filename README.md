@@ -270,7 +270,7 @@ cm sync off cm-s1   # Disable synchronize-panes for one named cm tmux session
 
 ## Behavior Notes
 
-- Multi-instance `start`, `stop`, `restart`, and `rm` operations run in parallel.
+- Multi-instance `start`, `stop`, `restart`, `update`, and `rm` operations run in parallel.
 - SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` retries higher ports when a port is busy. Use `cm list` instead of assuming the port.
 - `cm list` compares each container image ID to the current local `cm:latest` image ID and reports `current`, `stale`, or `unknown`.
 - `cm update` recreates containers from `cm:latest`. It preserves the workspace bind mount, but changes inside the container outside `/home/me/workspace` are lost.

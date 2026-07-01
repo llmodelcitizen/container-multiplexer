@@ -839,41 +839,69 @@ def update_instance(
     local_image: ImageMetadata | None = None,
 ) -> bool:
     """Recreate one instance from the current local cm:latest image."""
+    success, stdout_messages, stderr_messages = _update_instance_result(
+        client,
+        n,
+        force=force,
+        local_image=local_image,
+    )
+    for message in stderr_messages:
+        print(message, file=sys.stderr)
+    for message in stdout_messages:
+        print(message)
+    return success
+
+
+def _update_instance_result(
+    client: docker.DockerClient,
+    n: int,
+    *,
+    force: bool = False,
+    local_image: ImageMetadata | None = None,
+) -> tuple[bool, list[str], list[str]]:
+    """Recreate one instance and return printable stdout/stderr messages."""
     cfg = get_instance_config(n)
+    stdout_messages: list[str] = []
+    stderr_messages: list[str] = []
+
     try:
         prepare_workspace(cfg["workspace"])
     except WorkspacePreflightError as e:
-        print(e, file=sys.stderr)
-        return False
+        stderr_messages.append(str(e))
+        return False, stdout_messages, stderr_messages
 
     try:
         container = get_managed_container(client, cfg["container"])
     except UnmanagedContainerNameError as e:
-        print(e)
-        return False
+        stdout_messages.append(str(e))
+        return False, stdout_messages, stderr_messages
     if not container:
-        print(f"Instance {n} does not exist")
-        return False
+        stdout_messages.append(f"Instance {n} does not exist")
+        return False, stdout_messages, stderr_messages
 
     identity_error = get_existing_container_identity_error(container, n)
     if identity_error:
-        print(identity_error)
-        return False
+        stdout_messages.append(identity_error)
+        return False, stdout_messages, stderr_messages
 
     local_image = local_image or _get_local_cm_image_metadata(client)
     if not local_image.id:
-        print(_local_image_unavailable_message(local_image))
-        _print_cm_image_build_hint()
-        return False
+        stdout_messages.append(_local_image_unavailable_message(local_image))
+        stdout_messages.append(_cm_image_build_hint())
+        return False, stdout_messages, stderr_messages
 
     attrs = _container_attrs(container)
     image_status = _image_status(attrs.get("Image"), local_image.id)
     if image_status == "current" and not force:
-        print(f"Instance {n} image is current (use --force to recreate)")
-        return True
+        stdout_messages.append(
+            f"Instance {n} image is current (use --force to recreate)"
+        )
+        return True, stdout_messages, stderr_messages
     if image_status == "unknown" and not force:
-        print(f"Instance {n} image status is unknown (use --force to recreate)")
-        return False
+        stdout_messages.append(
+            f"Instance {n} image status is unknown (use --force to recreate)"
+        )
+        return False, stdout_messages, stderr_messages
 
     was_running = _container_running(container, attrs)
     backup_name = f"cm-update-backup-{n:03d}-{os.getpid()}-{time.time_ns()}"
@@ -888,21 +916,23 @@ def update_instance(
                 container.start()
             except Exception:
                 pass
-        print(f"Failed to prepare instance {n} for update: {e}")
-        return False
+        stdout_messages.append(f"Failed to prepare instance {n} for update: {e}")
+        return False, stdout_messages, stderr_messages
 
     port, error = try_start_container(client, n, cfg)
     if error:
         _remove_failed_update_container(client, cfg["container"])
         restore_error = _restore_update_backup(container, cfg["container"], was_running)
         if restore_error:
-            print(
+            stdout_messages.append(
                 f"Failed to update instance {n}: {error}; "
                 f"also failed to restore old container: {restore_error}"
             )
         else:
-            print(f"Failed to update instance {n}: {error}; restored old container")
-        return False
+            stdout_messages.append(
+                f"Failed to update instance {n}: {error}; restored old container"
+            )
+        return False, stdout_messages, stderr_messages
 
     try:
         new_container = get_managed_container(client, cfg["container"])
@@ -917,39 +947,63 @@ def update_instance(
         restore_error = _restore_update_backup(container, cfg["container"], was_running)
         detail = error or "new container was not found after creation"
         if restore_error:
-            print(
+            stdout_messages.append(
                 f"Failed to update instance {n}: {detail}; "
                 f"also failed to restore old container: {restore_error}"
             )
         else:
-            print(f"Failed to update instance {n}: {detail}; restored old container")
-        return False
+            stdout_messages.append(
+                f"Failed to update instance {n}: {detail}; restored old container"
+            )
+        return False, stdout_messages, stderr_messages
 
     if not was_running:
         try:
             new_container.stop()
         except Exception as e:
-            print(f"Warning: updated instance {n} but could not stop it: {e}")
+            stdout_messages.append(
+                f"Warning: updated instance {n} but could not stop it: {e}"
+            )
 
     try:
         _remove_container(container, force=True)
     except Exception as e:
-        print(
+        stdout_messages.append(
             f"Warning: updated instance {n} but could not remove "
             f"backup {backup_name}: {e}"
         )
 
     if port != cfg["port"]:
-        print(
+        stdout_messages.append(
             f"Updated instance {n} from {image_status} image "
             f"(port {port} - {cfg['port']} was in use, workspace preserved)"
         )
     else:
-        print(
+        stdout_messages.append(
             f"Updated instance {n} from {image_status} image "
             f"(port {port}, workspace preserved)"
         )
-    return True
+    return True, stdout_messages, stderr_messages
+
+
+def _update_instance_worker(
+    n: int,
+    *,
+    force: bool,
+    local_image: ImageMetadata,
+) -> tuple[int, bool, str]:
+    """Worker function to update an instance in a thread."""
+    client = get_client()
+    try:
+        success, stdout_messages, stderr_messages = _update_instance_result(
+            client,
+            n,
+            force=force,
+            local_image=local_image,
+        )
+        return (n, success, "\n".join(stderr_messages + stdout_messages))
+    finally:
+        client.close()
 
 
 def _start_instance_worker(n: int) -> tuple[int, bool, str]:
@@ -1078,21 +1132,34 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
     """Run worker function in parallel across instances.
     Returns True if all operations succeeded.
     """
-    all_success = True
+    success_messages = []
+    failure_messages = []
     with ThreadPoolExecutor(max_workers=min(len(instances), 32)) as executor:
         future_to_n = {executor.submit(worker_func, n): n for n in instances}
         for future in as_completed(future_to_n):
             try:
                 _, success, message = future.result()
-                print(message)
-                if not success:
-                    all_success = False
+                if success:
+                    success_messages.append(message)
+                else:
+                    failure_messages.append(message)
             except Exception as e:
                 n = future_to_n[future]
-                print(f"Instance {n}: unexpected error: {e}")
-                all_success = False
+                failure_messages.append(f"Instance {n}: unexpected error: {e}")
 
-    return all_success
+    for message in success_messages:
+        if message:
+            print(message)
+
+    if failure_messages:
+        if success_messages:
+            print()
+        print("Errors:")
+        for message in failure_messages:
+            if message:
+                print(message)
+
+    return not failure_messages
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -1235,7 +1302,19 @@ def cmd_update(args: argparse.Namespace) -> int:
             print("Aborted")
             return 1
 
-    for n, _status in plans:
+    planned_instances = [n for n, _status in plans]
+    if len(planned_instances) > 1:
+        def update_worker(n: int) -> tuple[int, bool, str]:
+            return _update_instance_worker(
+                n,
+                force=args.force,
+                local_image=local_image,
+            )
+
+        if not run_parallel(update_worker, planned_instances):
+            success = False
+    else:
+        n = planned_instances[0]
         if not update_instance(client, n, force=args.force, local_image=local_image):
             success = False
 

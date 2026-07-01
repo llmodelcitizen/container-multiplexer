@@ -148,6 +148,9 @@ class FakeClient:
         self.containers = FakeContainers(registry, image_id, run_error)
         self.api = FakeAPI(registry)
 
+    def close(self):
+        pass
+
 
 class UpdateTests(unittest.TestCase):
     def setUp(self):
@@ -307,6 +310,38 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(stale.removed, 1)
         self.assertEqual(current.renames, [])
         self.assertEqual(len(client.containers.run_calls), 1)
+
+    def test_update_multiple_planned_instances_runs_in_parallel(self):
+        registry: dict[str, FakeContainer] = {}
+        first = self.make_container(registry, n=1)
+        second = self.make_container(registry, n=2)
+        client = FakeClient(registry)
+        parallel_calls: list[list[int]] = []
+
+        original_run_parallel = self.cm.run_parallel
+
+        def fake_run_parallel(worker_func, instances: list[int]) -> bool:
+            parallel_calls.append(list(instances))
+            success = True
+            for n in instances:
+                _, worker_success, message = worker_func(n)
+                print(message)
+                success = success and worker_success
+            return success
+
+        self.cm.run_parallel = fake_run_parallel
+        try:
+            result, output = self.run_update(client, instances=["1", "2"])
+        finally:
+            self.cm.run_parallel = original_run_parallel
+
+        self.assertEqual(result, 0)
+        self.assertEqual(parallel_calls, [[1, 2]])
+        self.assertIn("Updated instance 1 from stale image", output)
+        self.assertIn("Updated instance 2 from stale image", output)
+        self.assertEqual(first.removed, 1)
+        self.assertEqual(second.removed, 1)
+        self.assertEqual(len(client.containers.run_calls), 2)
 
     def test_update_unknown_requires_force(self):
         registry: dict[str, FakeContainer] = {}
