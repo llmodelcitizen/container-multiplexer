@@ -86,6 +86,23 @@ class TryStartContainerTests(unittest.TestCase):
         self.assertEqual(error, "image pull failed")
         self.assertEqual(len(client.containers.run_calls), 1)
 
+    def test_non_port_api_error_removes_created_managed_container(self) -> None:
+        created: list[FakeContainer] = []
+
+        def create_container_then_raise(containers, image, kwargs):
+            container = containers.create_running(kwargs)
+            created.append(container)
+            raise FakeAPIError("image pull failed")
+
+        client = FakeClient(run_effects=[create_container_then_raise])
+
+        port, error = self.run_try_start(client)
+
+        self.assertIsNone(port)
+        self.assertEqual(error, "image pull failed")
+        self.assertEqual(created[0].remove_calls, [{"force": True}])
+        self.assertNotIn("cm-001", client.registry)
+
     def test_retry_exhaustion_reports_after_100_attempts(self) -> None:
         effects = [
             make_failed_port_container_then_raise("bind: address already in use")

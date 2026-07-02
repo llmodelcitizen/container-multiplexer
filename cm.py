@@ -769,6 +769,7 @@ def try_start_container(
                     container.remove(force=True)
                 port += 1
                 continue
+            _remove_failed_start_container(client, cfg["container"])
             return (None, str(e))
 
     return (None, f"Could not find available port after {max_port_attempts} attempts")
@@ -800,7 +801,16 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
             print(f"Instance {n} is already running")
             return True
         # Start existing stopped container
-        container.start()
+        try:
+            container.start()
+        except docker_sdk.errors.APIError as e:
+            print(f"Failed to start instance {n}: {e}")
+            if is_port_allocation_error(e):
+                print(
+                    "Hint: remove and recreate the stopped container to retry "
+                    f"port assignment: cm rm {n}; cm start {n}"
+                )
+            return False
         print(f"Started instance {n} (existing container)")
         return True
 
@@ -841,7 +851,12 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
         print(f"Instance {n} is not running")
         return False
 
-    container.stop()
+    docker_sdk = get_docker_sdk()
+    try:
+        container.stop()
+    except docker_sdk.errors.APIError as e:
+        print(f"Failed to stop instance {n}: {e}")
+        return False
     print(f"Stopped instance {n}")
     return True
 
@@ -866,7 +881,12 @@ def restart_instance(client: docker.DockerClient, n: int) -> bool:
             print(identity_error)
             return False
     if container and container.status == "running":
-        container.stop()
+        docker_sdk = get_docker_sdk()
+        try:
+            container.stop()
+        except docker_sdk.errors.APIError as e:
+            print(f"Failed to restart instance {n}: {e}")
+            return False
 
     return start_instance(client, n)
 
@@ -888,7 +908,12 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
         print(f"Instance {n} is running (use 'stop' instead)")
         return False
 
-    container.remove()
+    docker_sdk = get_docker_sdk()
+    try:
+        container.remove()
+    except docker_sdk.errors.APIError as e:
+        print(f"Failed to remove instance {n}: {e}")
+        return False
     print(f"Removed instance {n}")
     return True
 
@@ -898,6 +923,19 @@ def _remove_container(container, force: bool = False) -> None:
         container.remove(force=force)
     except TypeError:
         container.remove()
+
+
+def _remove_failed_start_container(client, container_name: str) -> None:
+    try:
+        failed_container = get_managed_container(client, container_name)
+    except UnmanagedContainerNameError:
+        return
+    if not failed_container:
+        return
+    try:
+        _remove_container(failed_container, force=True)
+    except Exception:
+        pass
 
 
 def _container_running(container, attrs: dict) -> bool:
