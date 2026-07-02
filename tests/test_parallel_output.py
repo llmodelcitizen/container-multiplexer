@@ -6,6 +6,7 @@ import importlib.util
 import io
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -60,6 +61,27 @@ class ParallelOutputTests(unittest.TestCase):
             "Instance 2: unexpected exit: authorized_keys missing",
             output,
         )
+
+    def test_run_parallel_prints_collected_results_on_keyboard_interrupt(self):
+        cm = load_cm()
+
+        def worker(n: int):
+            return (n, True, f"started instance {n}")
+
+        def interrupted_as_completed(futures):
+            futures = list(futures)
+            yield futures[0]
+            raise KeyboardInterrupt
+
+        stdout = io.StringIO()
+        with mock.patch.object(cm, "as_completed", interrupted_as_completed), \
+                contextlib.redirect_stdout(stdout):
+            result = cm.run_parallel(worker, [1, 2, 3])
+
+        output = stdout.getvalue()
+        self.assertFalse(result)
+        self.assertIn("started instance", output)
+        self.assertIn("Interrupted; run 'cm list' to inspect instance state.", output)
 
 
 if __name__ == "__main__":

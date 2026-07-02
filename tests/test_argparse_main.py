@@ -93,6 +93,19 @@ class ArgparseMainTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("invalid choice", stderr.getvalue())
 
+    def test_main_returns_130_on_keyboard_interrupt(self) -> None:
+        def interrupted(args):
+            raise KeyboardInterrupt
+
+        stderr = io.StringIO()
+        with mock.patch.object(self.cm, "cmd_version", interrupted), \
+                mock.patch.object(self.cm.sys, "argv", ["cm.py", "version"]), \
+                contextlib.redirect_stderr(stderr):
+            result = self.cm.main()
+
+        self.assertEqual(result, 130)
+        self.assertIn("Interrupted", stderr.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

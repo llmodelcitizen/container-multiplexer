@@ -1403,23 +1403,37 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
     """
     success_messages = []
     failure_messages = []
-    with ThreadPoolExecutor(max_workers=min(len(instances), 32)) as executor:
+    interrupted = False
+    executor = ThreadPoolExecutor(max_workers=min(len(instances), 32))
+    try:
         future_to_n = {executor.submit(worker_func, n): n for n in instances}
-        for future in as_completed(future_to_n):
-            try:
-                _, success, message = future.result()
-                if success:
-                    success_messages.append(message)
-                else:
-                    failure_messages.append(message)
-            except SystemExit as e:
-                n = future_to_n[future]
-                failure_messages.append(
-                    f"Instance {n}: unexpected exit: {_base_exception_message(e)}"
-                )
-            except Exception as e:
-                n = future_to_n[future]
-                failure_messages.append(f"Instance {n}: unexpected error: {e}")
+        try:
+            for future in as_completed(future_to_n):
+                try:
+                    _, success, message = future.result()
+                    if success:
+                        success_messages.append(message)
+                    else:
+                        failure_messages.append(message)
+                except SystemExit as e:
+                    n = future_to_n[future]
+                    failure_messages.append(
+                        f"Instance {n}: unexpected exit: {_base_exception_message(e)}"
+                    )
+                except Exception as e:
+                    n = future_to_n[future]
+                    failure_messages.append(f"Instance {n}: unexpected error: {e}")
+        except KeyboardInterrupt:
+            interrupted = True
+            for future, n in future_to_n.items():
+                if future.cancel():
+                    failure_messages.append(f"Instance {n}: canceled")
+            executor.shutdown(wait=False, cancel_futures=True)
+        else:
+            executor.shutdown(wait=True)
+    except Exception:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
 
     for message in success_messages:
         if message:
@@ -1433,7 +1447,12 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
             if message:
                 print(message)
 
-    return not failure_messages
+    if interrupted:
+        if success_messages or failure_messages:
+            print()
+        print("Interrupted; run 'cm list' to inspect instance state.")
+
+    return not failure_messages and not interrupted
 
 
 def cmd_start(args: argparse.Namespace) -> int:
@@ -2933,7 +2952,11 @@ def main() -> int:
     p_version.set_defaults(func=cmd_version)
 
     args = parser.parse_args()
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("Interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":
