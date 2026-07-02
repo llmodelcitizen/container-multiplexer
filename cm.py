@@ -1271,6 +1271,11 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
                     success_messages.append(message)
                 else:
                     failure_messages.append(message)
+            except SystemExit as e:
+                n = future_to_n[future]
+                failure_messages.append(
+                    f"Instance {n}: unexpected exit: {_base_exception_message(e)}"
+                )
             except Exception as e:
                 n = future_to_n[future]
                 failure_messages.append(f"Instance {n}: unexpected error: {e}")

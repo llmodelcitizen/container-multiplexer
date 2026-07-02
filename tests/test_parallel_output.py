@@ -40,6 +40,27 @@ class ParallelOutputTests(unittest.TestCase):
         self.assertLess(output.index("Errors:"), output.index("failed instance 1"))
         self.assertLess(output.index("Errors:"), output.index("Instance 3: unexpected error: boom"))
 
+    def test_run_parallel_reports_system_exit_without_discarding_results(self):
+        cm = load_cm()
+
+        def worker(n: int):
+            if n == 1:
+                return (n, True, "started instance 1")
+            raise SystemExit("authorized_keys missing")
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            result = cm.run_parallel(worker, [1, 2])
+
+        output = stdout.getvalue()
+        self.assertFalse(result)
+        self.assertIn("started instance 1", output)
+        self.assertIn("Errors:", output)
+        self.assertIn(
+            "Instance 2: unexpected exit: authorized_keys missing",
+            output,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
