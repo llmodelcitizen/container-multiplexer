@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import codecs
 import re
 import shlex
 import socket
@@ -2412,8 +2413,10 @@ def cmd_logs(args: argparse.Namespace) -> int:
 
     # Stream logs
     try:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         for line in container.logs(stream=True, follow=True):
-            print(line.decode("utf-8"), end="")
+            print(decoder.decode(line), end="")
+        print(decoder.decode(b"", final=True), end="")
     except KeyboardInterrupt:
         print()
 

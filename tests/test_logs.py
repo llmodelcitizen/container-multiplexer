@@ -59,7 +59,6 @@ class LogCommandTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("Instance 1 does not exist", stdout.getvalue())
 
-    @unittest.expectedFailure
     def test_cmd_logs_replaces_non_utf8_bytes_without_crashing(self) -> None:
         container = FakeContainer("cm-001", logs_output=[b"ok\xff\n"])
 
@@ -67,6 +66,14 @@ class LogCommandTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output, "ok\ufffd\n")
+
+    def test_cmd_logs_decodes_multibyte_characters_split_across_chunks(self) -> None:
+        container = FakeContainer("cm-001", logs_output=[b"emoji: \xf0\x9f", b"\x98\x80\n"])
+
+        result, output = self.run_logs(container)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(output, "emoji: \U0001f600\n")
 
 
 if __name__ == "__main__":
