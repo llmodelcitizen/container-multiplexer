@@ -55,6 +55,10 @@ class WorkspacePreflightError(RuntimeError):
     """Raised when the host workspace would not be usable in the container."""
 
 
+class AuthorizedKeysError(RuntimeError):
+    """Raised when the cm authorized_keys source cannot be mounted."""
+
+
 MANAGED_LABEL = "cm.managed"
 MANAGED_LABEL_VALUE = "true"
 MANAGED_CONTAINER_RE = re.compile(r"^cm-(\d{3})$")
@@ -674,41 +678,55 @@ def get_next_session_name() -> tuple[str, bool]:
         n += 1
 
 
-def get_authorized_keys_path() -> Path:
+def validate_authorized_keys_path() -> Path:
     """Return the authorized_keys file to stage into containers."""
     path = AUTHORIZED_KEYS_PATH
 
     if not path.is_file():
-        print(f"Error: authorized_keys source is not a file: {path}", file=sys.stderr)
-        print("Create the default cm SSH key, then rerun the installer:", file=sys.stderr)
-        print("  mkdir -p ~/.ssh", file=sys.stderr)
-        print("  chmod 700 ~/.ssh", file=sys.stderr)
-        print("  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519", file=sys.stderr)
-        print("  chmod 400 ~/.ssh/cm_ed25519", file=sys.stderr)
-        print("  ./install.sh", file=sys.stderr)
-        sys.exit(1)
+        raise AuthorizedKeysError(
+            f"Error: authorized_keys source is not a file: {path}\n"
+            "Create the default cm SSH key, then rerun the installer:\n"
+            "  mkdir -p ~/.ssh\n"
+            "  chmod 700 ~/.ssh\n"
+            "  ssh-keygen -t ed25519 -f ~/.ssh/cm_ed25519\n"
+            "  chmod 400 ~/.ssh/cm_ed25519\n"
+            "  ./install.sh"
+        )
     try:
         if path.stat().st_size == 0:
-            print(f"Error: authorized_keys source is empty: {path}", file=sys.stderr)
-            sys.exit(1)
+            raise AuthorizedKeysError(f"Error: authorized_keys source is empty: {path}")
     except OSError as e:
-        print(f"Error: Cannot read authorized_keys source {path}: {e}", file=sys.stderr)
-        sys.exit(1)
+        raise AuthorizedKeysError(f"Error: Cannot read authorized_keys source {path}: {e}") from e
     if not os.access(path, os.R_OK):
-        print(f"Error: Cannot read authorized_keys source: {path}", file=sys.stderr)
-        sys.exit(1)
+        raise AuthorizedKeysError(f"Error: Cannot read authorized_keys source: {path}")
 
     return path
 
 
-def try_start_container(client: docker.DockerClient, n: int, cfg: dict) -> tuple[int | None, str | None]:
+def get_authorized_keys_path() -> Path:
+    """Return the authorized_keys file to stage into containers, exiting on failure."""
+    try:
+        return validate_authorized_keys_path()
+    except AuthorizedKeysError as e:
+        print(e, file=sys.stderr)
+        sys.exit(1)
+
+
+def try_start_container(
+    client: docker.DockerClient,
+    n: int,
+    cfg: dict,
+    *,
+    auth_keys: Path | None = None,
+) -> tuple[int | None, str | None]:
     """Try to start a container, retrying with next port if port is in use.
 
     Returns (port, None) on success, or (None, error_message) on failure.
     """
     port = cfg["port"]
     max_port_attempts = 100
-    auth_keys = get_authorized_keys_path()
+    if auth_keys is None:
+        auth_keys = get_authorized_keys_path()
     environment = get_container_environment()
     docker_sdk = get_docker_sdk()
 
@@ -918,6 +936,19 @@ def _restore_update_backup(
     return None
 
 
+def _base_exception_message(e: BaseException) -> str:
+    if isinstance(e, KeyboardInterrupt):
+        return "interrupted"
+    if isinstance(e, SystemExit):
+        code = e.code
+        if code is None:
+            return "aborted"
+        if isinstance(code, int):
+            return f"aborted with exit code {code}"
+        return str(code) or "aborted"
+    return str(e) or e.__class__.__name__
+
+
 def update_instance(
     client: docker.DockerClient,
     n: int,
@@ -990,6 +1021,12 @@ def _update_instance_result(
         )
         return False, stdout_messages, stderr_messages
 
+    try:
+        auth_keys = validate_authorized_keys_path()
+    except AuthorizedKeysError as e:
+        stderr_messages.append(str(e))
+        return False, stdout_messages, stderr_messages
+
     was_running = _container_running(container, attrs)
     backup_name = f"cm-update-backup-{n:03d}-{os.getpid()}-{time.time_ns()}"
 
@@ -1006,7 +1043,11 @@ def _update_instance_result(
         stdout_messages.append(f"Failed to prepare instance {n} for update: {e}")
         return False, stdout_messages, stderr_messages
 
-    port, error = try_start_container(client, n, cfg)
+    try:
+        port, error = try_start_container(client, n, cfg, auth_keys=auth_keys)
+    except BaseException as e:
+        port = None
+        error = _base_exception_message(e)
     if error:
         _remove_failed_update_container(client, cfg["container"])
         restore_error = _restore_update_backup(container, cfg["container"], was_running)

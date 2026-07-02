@@ -70,6 +70,43 @@ class UpdateFailureBranchTests(unittest.TestCase):
             stdout_messages,
         )
 
+    def test_update_validates_authorized_keys_before_renaming_old_container(self) -> None:
+        old = FakeContainer("cm-001", status="running", image_id="sha256:old")
+        client = self.make_client(old)
+        self.cm.AUTHORIZED_KEYS_PATH.unlink()
+
+        success, stdout_messages, stderr_messages = self.update_result(client)
+
+        self.assertFalse(success)
+        self.assertEqual(stdout_messages, [])
+        self.assertIn("authorized_keys source is not a file", "\n".join(stderr_messages))
+        self.assertEqual(old.stopped, 0)
+        self.assertEqual(old.renames, [])
+        self.assertIs(client.registry["cm-001"], old)
+        self.assertEqual(client.containers.run_calls, [])
+
+    def test_update_restores_backup_when_container_start_exits_after_rename(self) -> None:
+        old = FakeContainer("cm-001", status="running", image_id="sha256:old")
+        client = self.make_client(old)
+
+        with mock.patch.object(
+            self.cm,
+            "try_start_container",
+            side_effect=SystemExit("authorized_keys failed"),
+        ):
+            success, stdout_messages, stderr_messages = self.update_result(client)
+
+        self.assertFalse(success)
+        self.assertEqual(stderr_messages, [])
+        self.assertEqual(old.stopped, 1)
+        self.assertEqual(old.started, 1)
+        self.assertEqual(old.renames[-1], "cm-001")
+        self.assertIs(client.registry["cm-001"], old)
+        self.assertIn(
+            "Failed to update instance 1: authorized_keys failed; restored old container",
+            stdout_messages,
+        )
+
     def test_update_warns_when_backup_container_cannot_be_removed(self) -> None:
         old = FakeContainer("cm-001", status="running", image_id="sha256:old")
         client = self.make_client(old)
