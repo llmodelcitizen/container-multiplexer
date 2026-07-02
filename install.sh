@@ -162,6 +162,10 @@ if ! command -v "$PYTHON" >/dev/null 2>&1; then
 fi
 
 echo "Creating Python virtual environment at $VENV_DIR"
+if [[ -e "$VENV_DIR" || -L "$VENV_DIR" ]]; then
+    echo "Removing existing Python virtual environment at $VENV_DIR"
+    rm -rf "$VENV_DIR"
+fi
 "$PYTHON" -m venv "$VENV_DIR"
 
 echo "Installing Python Docker SDK"

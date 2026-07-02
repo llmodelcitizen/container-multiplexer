@@ -187,6 +187,26 @@ class InstallUninstallTests(unittest.TestCase):
             self.assertIn("is not a file", result.stdout)
             self.assertFalse((install_dir / "cm").exists())
 
+    def test_install_recreates_existing_venv(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            install_dir = root / "bin"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            (home / ".ssh").mkdir(parents=True)
+            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            stale = install_dir / ".cm-venv" / "stale"
+            stale.parent.mkdir(parents=True)
+            stale.write_text("old venv\n", encoding="utf-8")
+
+            result = run_install(home, install_dir, fake_python=make_fake_python(fake_bin))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Removing existing Python virtual environment", result.stdout)
+            self.assertFalse(stale.exists())
+            self.assertTrue((install_dir / ".cm-venv" / "bin" / "python").is_file())
+
     def test_uninstall_removes_files_and_venv_then_prints_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             install_dir = Path(temp_dir) / "bin"
