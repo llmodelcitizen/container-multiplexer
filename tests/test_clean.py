@@ -108,6 +108,28 @@ class CleanCommandTests(unittest.TestCase):
                 self.assertTrue(orphan.exists())
                 self.assertIn("  cm.002/", output)
 
+    def test_clean_continues_after_workspace_removal_error(self) -> None:
+        self.cm.WORKSPACES_DIR.mkdir()
+        blocked = self.cm.WORKSPACES_DIR / "cm.001"
+        removable = self.cm.WORKSPACES_DIR / "cm.002"
+        blocked.mkdir()
+        removable.mkdir()
+        real_rmtree = self.cm.shutil.rmtree
+
+        def fake_rmtree(path):
+            if Path(path) == blocked:
+                raise PermissionError("permission denied")
+            return real_rmtree(path)
+
+        with mock.patch.object(self.cm.shutil, "rmtree", side_effect=fake_rmtree):
+            result, output = self.run_clean(FakeClient(), "y")
+
+        self.assertEqual(result, 1)
+        self.assertTrue(blocked.exists())
+        self.assertFalse(removable.exists())
+        self.assertIn("Failed to remove cm.001/", output)
+        self.assertIn("Removed cm.002/", output)
+
     def test_clean_reports_missing_or_non_directory_workspace_root(self) -> None:
         missing_result, missing_output = self.run_clean(FakeClient(), "y")
         self.assertEqual(missing_result, 0)

@@ -1707,11 +1707,18 @@ def cmd_clean(args: argparse.Namespace) -> int:
         print("Aborted")
         return 1
 
+    failed = False
     for d in orphans:
-        shutil.rmtree(d)
+        try:
+            shutil.rmtree(d)
+        except OSError as e:
+            failed = True
+            print(f"Failed to remove {d.name}/: {e}")
+            print(f"  Fix ownership/permissions, then rerun 'cm clean' or remove manually: {d}")
+            continue
         print(f"Removed {d.name}/")
 
-    return 0
+    return 1 if failed else 0
 
 
 def cmd_ssh(args: argparse.Namespace) -> int:
