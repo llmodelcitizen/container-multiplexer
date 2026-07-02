@@ -38,6 +38,17 @@ class InstanceResolutionTests(unittest.TestCase):
                 f"Instance {self.cm.MAX_INSTANCE + 1} exceeds maximum ({self.cm.MAX_INSTANCE})",
             )
 
+    def test_parse_instances_rejects_huge_range_before_materializing(self) -> None:
+        original_max = self.cm.MAX_INSTANCE
+        self.cm.MAX_INSTANCE = 3
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                self.cm.parse_instances(["1-1000000"])
+        finally:
+            self.cm.MAX_INSTANCE = original_max
+
+        self.assertEqual(str(ctx.exception), "Instance 1000000 exceeds maximum (3)")
+
     def test_get_running_instances_uses_real_summary_parser(self) -> None:
         client = FakeClient(
             summaries=[

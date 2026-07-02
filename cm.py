@@ -571,6 +571,13 @@ def is_port_allocation_error(error: Exception) -> bool:
     )
 
 
+def validate_instance_number(n: int) -> None:
+    if n < 1:
+        sys.exit(f"Instance {n} must be positive")
+    if n > MAX_INSTANCE:
+        sys.exit(f"Instance {n} exceeds maximum ({MAX_INSTANCE})")
+
+
 def parse_instances(args: list[str]) -> list[int]:
     """Parse instance arguments into a list of instance numbers.
 
@@ -586,6 +593,8 @@ def parse_instances(args: list[str]) -> list[int]:
             try:
                 start, end = arg.split("-")
                 start, end = int(start), int(end)
+                validate_instance_number(start)
+                validate_instance_number(end)
                 if start > end:
                     start, end = end, start
                 instances.extend(range(start, end + 1))
@@ -599,10 +608,7 @@ def parse_instances(args: list[str]) -> list[int]:
 
     # Validate instance range
     for n in instances:
-        if n < 1:
-            sys.exit(f"Instance {n} must be positive")
-        if n > MAX_INSTANCE:
-            sys.exit(f"Instance {n} exceeds maximum ({MAX_INSTANCE})")
+        validate_instance_number(n)
 
     return sorted(set(instances))
 
