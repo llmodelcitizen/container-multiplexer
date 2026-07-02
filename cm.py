@@ -2778,7 +2778,7 @@ _cm_completions() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="start stop restart update rm clean ssh list logs inspect pan win kill sync version"
+    local commands="start stop restart update rm clean ssh list logs inspect pan win kill sync autocomplete version"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))

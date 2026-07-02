@@ -213,7 +213,6 @@ printf '%s\n' "${COMPREPLY[@]}"
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    @unittest.expectedFailure
     def test_completion_commands_match_public_subcommands(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
