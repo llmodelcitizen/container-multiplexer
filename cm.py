@@ -145,6 +145,18 @@ def tmux_exact_window_target(session: str, window: str) -> str:
     return f"={session}:{window}"
 
 
+def tmux_ssh_pane_command(instance: int) -> str:
+    cm_path = shlex.quote(str(get_cm_command_path()))
+    return (
+        f"{cm_path} ssh {instance}; "
+        "status=$?; "
+        "printf '\\n*** cm ssh ended with status %s; "
+        "no host shell was started. Press Enter to close this pane. ***\\n' "
+        "\"$status\"; "
+        "read -r _"
+    )
+
+
 def exec_tmux(args: list[str]) -> None:
     """Replace current process with tmux command, printing it to stderr first."""
     cmd = ["tmux"] + args
@@ -2448,8 +2460,7 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
     # Create new session with first instance
     first = instances[0]
-    cm_path = shlex.quote(str(get_cm_command_path()))
-    pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
+    pane_cmd = tmux_ssh_pane_command(first)
     run_tmux(["new-session", "-d", "-s", session_name, "-n", session_name,
                     pane_cmd], check=True)
     run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
@@ -2458,8 +2469,8 @@ def cmd_panes(args: argparse.Namespace) -> int:
     run_tmux(["setw", "-t", session_name, "automatic-rename", "off"], check=True)
 
     # Split panes for remaining instances
-    for i, n in enumerate(instances[1:], start=1):
-        pane_cmd = f"{cm_path} ssh {n} || exec $SHELL"
+    for n in instances[1:]:
+        pane_cmd = tmux_ssh_pane_command(n)
         run_tmux(["split-window", "-t", session_name, pane_cmd], check=True)
         # Rebalance layout after each split to prevent "no space for new pane"
         run_tmux(["select-layout", "-t", session_name, "tiled"],
@@ -2501,9 +2512,8 @@ def cmd_win(args: argparse.Namespace) -> int:
 
     # Create new session with first window
     first = instances[0]
-    cm_path = shlex.quote(str(get_cm_command_path()))
     window_name = f"{session_name}-w{first}"
-    pane_cmd = f"{cm_path} ssh {first} || exec $SHELL"
+    pane_cmd = tmux_ssh_pane_command(first)
     run_tmux(["new-session", "-d", "-s", session_name,
                     "-n", window_name, pane_cmd], check=True)
     run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
@@ -2514,7 +2524,7 @@ def cmd_win(args: argparse.Namespace) -> int:
     # Create additional windows
     for n in instances[1:]:
         window_name = f"{session_name}-w{n}"
-        pane_cmd = f"{cm_path} ssh {n} || exec $SHELL"
+        pane_cmd = tmux_ssh_pane_command(n)
         run_tmux(["new-window", "-t", f"{session_name}:",
                         "-n", window_name, pane_cmd], check=True)
 

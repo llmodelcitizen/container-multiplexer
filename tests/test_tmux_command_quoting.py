@@ -49,7 +49,14 @@ class TmuxCommandQuotingTest(unittest.TestCase):
 
     def expected_shell_command(self, instance: int) -> str:
         cm_path = shlex.quote(str(self.cm.SCRIPT_DIR / "cm.py"))
-        return f"{cm_path} ssh {instance} || exec $SHELL"
+        return (
+            f"{cm_path} ssh {instance}; "
+            "status=$?; "
+            "printf '\\n*** cm ssh ended with status %s; "
+            "no host shell was started. Press Enter to close this pane. ***\\n' "
+            "\"$status\"; "
+            "read -r _"
+        )
 
     def test_pan_quotes_cm_path_in_tmux_shell_commands(self) -> None:
         args = types.SimpleNamespace(instances=["1", "2"], sync=False)
@@ -58,6 +65,7 @@ class TmuxCommandQuotingTest(unittest.TestCase):
 
         self.assertEqual(self.commands[0][-1], self.expected_shell_command(1))
         self.assertEqual(self.commands[5][-1], self.expected_shell_command(2))
+        self.assertNotIn("exec $SHELL", self.commands[0][-1])
 
     def test_win_quotes_cm_path_in_tmux_shell_commands(self) -> None:
         args = types.SimpleNamespace(instances=["1", "2"], sync=False)
@@ -66,6 +74,7 @@ class TmuxCommandQuotingTest(unittest.TestCase):
 
         self.assertEqual(self.commands[0][-1], self.expected_shell_command(1))
         self.assertEqual(self.commands[5][-1], self.expected_shell_command(2))
+        self.assertNotIn("exec $SHELL", self.commands[0][-1])
 
     def test_installed_wrapper_is_used_when_present(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
