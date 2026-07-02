@@ -73,6 +73,17 @@ class ParallelWorkerTests(unittest.TestCase):
         )
         self.assertEqual(missing.closed, 1)
 
+    def test_stop_worker_stops_restarting_container(self) -> None:
+        restarting = FakeContainer("cm-001", status="restarting")
+        client = FakeClient({"cm-001": restarting})
+
+        self.assertEqual(
+            self.run_worker(self.cm._stop_instance_worker, client, 1),
+            (1, True, "Stopped instance 1"),
+        )
+        self.assertEqual(restarting.stopped, 1)
+        self.assertEqual(client.closed, 1)
+
     def test_restart_worker_restarts_existing_running_container(self) -> None:
         running = FakeContainer("cm-001", status="running")
         client = FakeClient({"cm-001": running})
@@ -82,6 +93,17 @@ class ParallelWorkerTests(unittest.TestCase):
         self.assertEqual((n, success, message), (1, True, "Restarted instance 1 (existing container)"))
         self.assertEqual(running.stopped, 1)
         self.assertEqual(running.started, 1)
+        self.assertEqual(client.closed, 1)
+
+    def test_restart_worker_restarts_existing_restarting_container(self) -> None:
+        restarting = FakeContainer("cm-001", status="restarting")
+        client = FakeClient({"cm-001": restarting})
+
+        n, success, message = self.run_worker(self.cm._restart_instance_worker, client, 1)
+
+        self.assertEqual((n, success, message), (1, True, "Restarted instance 1 (existing container)"))
+        self.assertEqual(restarting.stopped, 1)
+        self.assertEqual(restarting.started, 1)
         self.assertEqual(client.closed, 1)
 
     def test_restart_worker_creates_missing_container(self) -> None:
@@ -113,6 +135,20 @@ class ParallelWorkerTests(unittest.TestCase):
         )
         self.assertEqual(running.removed, 0)
         self.assertEqual(running_client.closed, 1)
+
+    def test_rm_worker_forces_restarting_container(self) -> None:
+        registry: dict[str, FakeContainer] = {}
+        restarting = FakeContainer("cm-001", status="restarting", registry=registry)
+        registry["cm-001"] = restarting
+        client = FakeClient(registry)
+
+        self.assertEqual(
+            self.run_worker(self.cm._rm_instance_worker, client, 1),
+            (1, True, "Removed instance 1 (forced from restarting state)"),
+        )
+        self.assertEqual(restarting.remove_calls, [{"force": True}])
+        self.assertNotIn("cm-001", registry)
+        self.assertEqual(client.closed, 1)
 
     def test_multi_instance_commands_dispatch_to_parallel_workers(self) -> None:
         cases = [

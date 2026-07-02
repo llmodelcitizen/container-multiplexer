@@ -63,6 +63,8 @@ MANAGED_LABEL = "cm.managed"
 MANAGED_LABEL_VALUE = "true"
 MANAGED_CONTAINER_RE = re.compile(r"^cm-(\d{3})$")
 UPDATE_BACKUP_CONTAINER_RE = re.compile(r"^cm-update-backup-(\d{3})-.+")
+STOPPABLE_CONTAINER_STATUSES = {"running", "restarting", "paused"}
+FORCE_REMOVABLE_CONTAINER_STATUSES = {"restarting", "paused"}
 
 
 class UnmanagedContainerNameError(RuntimeError):
@@ -278,6 +280,11 @@ def get_container_labels(container) -> dict:
 def is_managed_container(container) -> bool:
     """Return True when a container carries the cm managed label."""
     return get_container_labels(container).get(MANAGED_LABEL) == MANAGED_LABEL_VALUE
+
+
+def get_container_status(container) -> str:
+    status = getattr(container, "status", "")
+    return status if isinstance(status, str) else ""
 
 
 def get_managed_container(client: docker.DockerClient, name: str):
@@ -853,7 +860,8 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
         print(f"Instance {n} does not exist")
         return False
 
-    if container.status != "running":
+    status = get_container_status(container)
+    if status not in STOPPABLE_CONTAINER_STATUSES:
         print(f"Instance {n} is not running")
         return False
 
@@ -886,7 +894,7 @@ def restart_instance(client: docker.DockerClient, n: int) -> bool:
         if identity_error:
             print(identity_error)
             return False
-    if container and container.status == "running":
+    if container and get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
         docker_sdk = get_docker_sdk()
         try:
             container.stop()
@@ -910,17 +918,25 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
         print(f"Instance {n} does not exist")
         return False
 
-    if container.status == "running":
+    status = get_container_status(container)
+    if status == "running":
         print(f"Instance {n} is running (use 'stop' instead)")
         return False
 
     docker_sdk = get_docker_sdk()
+    force = status in FORCE_REMOVABLE_CONTAINER_STATUSES
     try:
-        container.remove()
+        if force:
+            _remove_container(container, force=True)
+        else:
+            container.remove()
     except docker_sdk.errors.APIError as e:
         print(f"Failed to remove instance {n}: {e}")
         return False
-    print(f"Removed instance {n}")
+    if force:
+        print(f"Removed instance {n} (forced from {status} state)")
+    else:
+        print(f"Removed instance {n}")
     return True
 
 
@@ -1223,6 +1239,7 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
 def _stop_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to stop an instance in a thread."""
     client = get_client()
+    docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
         try:
@@ -1231,9 +1248,12 @@ def _stop_instance_worker(n: int) -> tuple[int, bool, str]:
             return (n, False, str(e))
         if not container:
             return (n, False, f"Instance {n} does not exist")
-        if container.status != "running":
+        if get_container_status(container) not in STOPPABLE_CONTAINER_STATUSES:
             return (n, False, f"Instance {n} is not running")
-        container.stop()
+        try:
+            container.stop()
+        except docker_sdk.errors.APIError as e:
+            return (n, False, f"Failed to stop instance {n}: {e}")
         return (n, True, f"Stopped instance {n}")
     finally:
         client.close()
@@ -1259,8 +1279,11 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
             identity_error = get_existing_container_identity_error(container, n)
             if identity_error:
                 return (n, False, identity_error)
-            if container.status == "running":
-                container.stop()
+            if get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
+                try:
+                    container.stop()
+                except docker_sdk.errors.APIError as e:
+                    return (n, False, f"Failed to restart instance {n}: {e}")
             # Start existing container
             container.start()
             return (n, True, f"Restarted instance {n} (existing container)")
@@ -1284,6 +1307,7 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
 def _rm_instance_worker(n: int) -> tuple[int, bool, str]:
     """Worker function to remove a dead container in a thread."""
     client = get_client()
+    docker_sdk = get_docker_sdk()
     try:
         cfg = get_instance_config(n)
         try:
@@ -1292,9 +1316,19 @@ def _rm_instance_worker(n: int) -> tuple[int, bool, str]:
             return (n, False, str(e))
         if not container:
             return (n, False, f"Instance {n} does not exist")
-        if container.status == "running":
+        status = get_container_status(container)
+        if status == "running":
             return (n, False, f"Instance {n} is running (use 'stop' instead)")
-        container.remove()
+        force = status in FORCE_REMOVABLE_CONTAINER_STATUSES
+        try:
+            if force:
+                _remove_container(container, force=True)
+            else:
+                container.remove()
+        except docker_sdk.errors.APIError as e:
+            return (n, False, f"Failed to remove instance {n}: {e}")
+        if force:
+            return (n, True, f"Removed instance {n} (forced from {status} state)")
         return (n, True, f"Removed instance {n}")
     finally:
         client.close()

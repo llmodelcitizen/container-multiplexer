@@ -65,6 +65,40 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("Failed to remove instance 1: remove failed", output)
 
+    def test_stop_accepts_restarting_container(self) -> None:
+        container = FakeContainer("cm-001", status="restarting")
+        client = FakeClient({"cm-001": container})
+
+        result, output = self.capture_stdout(self.cm.stop_instance, client, 1)
+
+        self.assertTrue(result)
+        self.assertEqual(container.stopped, 1)
+        self.assertIn("Stopped instance 1", output)
+
+    def test_restart_stops_restarting_container_before_starting(self) -> None:
+        container = FakeContainer("cm-001", status="restarting")
+        client = FakeClient({"cm-001": container})
+
+        result, output = self.capture_stdout(self.cm.restart_instance, client, 1)
+
+        self.assertTrue(result)
+        self.assertEqual(container.stopped, 1)
+        self.assertEqual(container.started, 1)
+        self.assertIn("Started instance 1 (existing container)", output)
+
+    def test_remove_forces_restarting_container(self) -> None:
+        registry: dict[str, FakeContainer] = {}
+        container = FakeContainer("cm-001", status="restarting", registry=registry)
+        registry["cm-001"] = container
+        client = FakeClient(registry)
+
+        result, output = self.capture_stdout(self.cm.rm_instance, client, 1)
+
+        self.assertTrue(result)
+        self.assertEqual(container.remove_calls, [{"force": True}])
+        self.assertNotIn("cm-001", registry)
+        self.assertIn("Removed instance 1 (forced from restarting state)", output)
+
 
 if __name__ == "__main__":
     unittest.main()
