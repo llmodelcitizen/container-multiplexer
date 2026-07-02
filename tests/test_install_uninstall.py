@@ -14,9 +14,10 @@ INSTALL_SH = ROOT / "install.sh"
 def run_uninstall(install_dir: Path) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(install_dir.parent)
+    env["CM_INSTALL_DIR"] = str(install_dir)
     return subprocess.run(
         ["bash", str(INSTALL_SH), "--uninstall"],
-        input=f"{install_dir}\n",
+        input="",
         text=True,
         capture_output=True,
         check=False,
@@ -76,11 +77,12 @@ exit 1
 def run_install(home: Path, install_dir: Path, *, fake_python: Path | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     env["HOME"] = str(home)
+    env["CM_INSTALL_DIR"] = str(install_dir)
     if fake_python is not None:
         env["CM_PYTHON"] = str(fake_python)
     return subprocess.run(
         ["bash", str(INSTALL_SH)],
-        input=f"{install_dir}\n",
+        input="",
         text=True,
         capture_output=True,
         check=False,
@@ -106,6 +108,7 @@ class InstallUninstallTests(unittest.TestCase):
             env = os.environ.copy()
             env.update({
                 "HOME": str(home),
+                "CM_INSTALL_DIR": str(install_dir),
                 "CM_PYTHON": str(fake_python),
                 "CM_FAKE_PIP_LOG": str(pip_log),
                 "CM_FAKE_GIT_VERSION": "v1.2.3/feature&dirty",
@@ -113,7 +116,7 @@ class InstallUninstallTests(unittest.TestCase):
             })
             result = subprocess.run(
                 ["bash", str(INSTALL_SH)],
-                input=f"{install_dir}\n",
+                input="",
                 text=True,
                 capture_output=True,
                 check=False,
@@ -206,6 +209,38 @@ class InstallUninstallTests(unittest.TestCase):
             self.assertIn("Removing existing Python virtual environment", result.stdout)
             self.assertFalse(stale.exists())
             self.assertTrue((install_dir / ".cm-venv" / "bin" / "python").is_file())
+
+    def test_install_uses_default_directory_when_stdin_is_not_interactive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            (home / ".ssh").mkdir(parents=True)
+            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            pip_log = root / "pip.log"
+            fake_python = make_fake_python(fake_bin)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "CM_PYTHON": str(fake_python),
+                "CM_FAKE_PIP_LOG": str(pip_log),
+            })
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SH)],
+                stdin=subprocess.DEVNULL,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+
+            default_install_dir = home / ".local" / "bin"
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Using default install directory", result.stdout)
+            self.assertTrue((default_install_dir / "cm").is_file())
+            self.assertFalse((root / 'INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"').exists())
 
     def test_uninstall_removes_files_and_venv_then_prints_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

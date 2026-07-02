@@ -52,14 +52,25 @@ print_path_guidance() {
     echo "  source \"$rc_file\""
 }
 
+resolve_install_dir() {
+    INSTALL_DIR="${CM_INSTALL_DIR:-}"
+    if [[ -z "$INSTALL_DIR" ]]; then
+        if [[ -t 0 ]]; then
+            read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR || INSTALL_DIR=""
+        else
+            echo "Using default install directory: $DEFAULT_INSTALL_DIR"
+        fi
+    fi
+    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
+    INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+}
+
 # --- Uninstall mode ---
 if [[ "$1" == "--uninstall" ]]; then
     echo "CM Uninstaller"
     echo "=============="
     echo
-    read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
-    INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-    INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+    resolve_install_dir
 
     removed=0
     for f in cm cm.py; do
@@ -98,11 +109,7 @@ echo "  1. Create ~/.cm, ~/.cm/workspaces, and ~/.cm/authorized_keys"
 echo "  2. Create a private Python virtual environment with the Docker SDK"
 echo "  3. Install a 'cm' wrapper and 'cm.py' script to your chosen directory"
 echo
-read -p "Install directory [$DEFAULT_INSTALL_DIR]: " INSTALL_DIR
-INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-
-# Expand ~
-INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+resolve_install_dir
 
 if [[ -e "$CM_HOME" && ! -d "$CM_HOME" ]]; then
     echo "Error: $CM_HOME exists and is not a directory."
