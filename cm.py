@@ -196,15 +196,30 @@ def tmux_exact_window_target(session: str, window: str) -> str:
 
 
 def tmux_ssh_pane_command(instance: int) -> str:
+    # Delegate to the hidden `_sshpane` handler so the command tmux traces stays
+    # short; the wrapper reproduces the old inline snippet (run `cm ssh`, report
+    # its exit status, then wait for Enter so the pane stays readable).
     cm_path = shlex.quote(str(get_cm_command_path()))
-    return (
-        f"{cm_path} ssh {instance}; "
-        "status=$?; "
-        "printf '\\n*** cm ssh ended with status %s; "
-        "no host shell was started. Press Enter to close this pane. ***\\n' "
-        "\"$status\"; "
-        "read -r _"
+    return f"{cm_path} _sshpane {instance}"
+
+
+def cmd_ssh_pane(instance: str) -> int:
+    """Run `cm ssh N` inside a tmux pane, then pause so the pane stays readable.
+
+    Used as the pane command by `cm pan`/`cm win`. Keeping this logic here (rather
+    than as an inline shell snippet passed to tmux) keeps the tmux invocation short
+    and hides the noisy per-pane command from tmux's command trace.
+    """
+    result = subprocess.run([str(get_cm_command_path()), "ssh", str(instance)])
+    print(
+        f"\n*** cm ssh ended with status {result.returncode}; "
+        "no host shell was started. Press Enter to close this pane. ***"
     )
+    try:
+        input()
+    except (EOFError, KeyboardInterrupt):
+        pass
+    return result.returncode
 
 
 def exec_tmux(args: list[str]) -> None:
@@ -2908,6 +2923,12 @@ def main() -> int:
         table = "--table" in sys.argv or "-t" in sys.argv
         args = argparse.Namespace(mode=mode, table=table)
         return cmd_complete(args)
+
+    # Handle internal pane wrapper before argparse (hidden from help); this backs
+    # the tmux panes created by `cm pan`/`cm win`.
+    if len(sys.argv) >= 2 and sys.argv[1] == "_sshpane":
+        instance = sys.argv[2] if len(sys.argv) > 2 else ""
+        return cmd_ssh_pane(instance)
 
     parser = argparse.ArgumentParser(description="Manage CM instances")
     parser.add_argument("--version", action="version", version=f"cm {VERSION}")
