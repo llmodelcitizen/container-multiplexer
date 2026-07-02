@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import shlex
 import socket
 import subprocess
@@ -56,6 +57,8 @@ class WorkspacePreflightError(RuntimeError):
 
 MANAGED_LABEL = "cm.managed"
 MANAGED_LABEL_VALUE = "true"
+MANAGED_CONTAINER_RE = re.compile(r"^cm-(\d{3})$")
+UPDATE_BACKUP_CONTAINER_RE = re.compile(r"^cm-update-backup-(\d{3})-.+")
 
 
 class UnmanagedContainerNameError(RuntimeError):
@@ -153,6 +156,47 @@ def get_instance_config(n: int) -> dict:
         "port": BASE_PORT + n,
         "workspace": WORKSPACES_DIR / f"cm.{n:03d}",
     }
+
+
+def _workspace_path(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve(strict=False)
+
+
+def _managed_instance_number_from_name(name: str) -> int | None:
+    """Return the instance number encoded in a managed cm container name."""
+    stripped = name.lstrip("/")
+    match = MANAGED_CONTAINER_RE.match(stripped)
+    if match is None:
+        match = UPDATE_BACKUP_CONTAINER_RE.match(stripped)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _workspaces_referenced_by_container_summary(summary: dict) -> set[Path]:
+    """Return workspace directories a Docker container summary still references."""
+    workspaces: set[Path] = set()
+
+    mounts = summary.get("Mounts", [])
+    if isinstance(mounts, list):
+        for mount in mounts:
+            if not isinstance(mount, dict):
+                continue
+            source = mount.get("Source")
+            destination = mount.get("Destination")
+            if isinstance(source, str) and destination == "/home/me/workspace":
+                workspaces.add(_workspace_path(source))
+
+    names = summary.get("Names", [])
+    if isinstance(names, list):
+        for name in names:
+            if not isinstance(name, str):
+                continue
+            n = _managed_instance_number_from_name(name)
+            if n is not None:
+                workspaces.add(_workspace_path(get_instance_config(n)["workspace"]))
+
+    return workspaces
 
 
 def get_container(client: docker.DockerClient, name: str):
@@ -1378,17 +1422,11 @@ def cmd_clean(args: argparse.Namespace) -> int:
     """Remove workspace directories that have no matching container."""
     client = get_client()
 
-    # Get all container instance numbers (any state)
+    # Get all workspace directories still referenced by managed containers.
     containers = client.api.containers(all=True, filters={"label": "cm.managed=true"})
-    container_nums = set()
+    referenced_workspaces: set[Path] = set()
     for c in containers:
-        names = c.get("Names", [])
-        if not names:
-            continue
-        try:
-            container_nums.add(int(names[0].lstrip("/").split("-")[1]))
-        except (IndexError, ValueError):
-            continue
+        referenced_workspaces.update(_workspaces_referenced_by_container_summary(c))
 
     # Find workspace dirs with no matching container
     if not WORKSPACES_DIR.exists():
@@ -1403,10 +1441,10 @@ def cmd_clean(args: argparse.Namespace) -> int:
         if not d.is_dir() or not d.name.startswith("cm."):
             continue
         try:
-            n = int(d.name.split(".")[1])
+            int(d.name.split(".")[1])
         except (IndexError, ValueError):
             continue
-        if n not in container_nums:
+        if _workspace_path(d) not in referenced_workspaces:
             orphans.append(d)
 
     if not orphans:

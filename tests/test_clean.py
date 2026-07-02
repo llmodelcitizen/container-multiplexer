@@ -53,6 +53,36 @@ class CleanCommandTests(unittest.TestCase):
         self.assertIn("Orphaned workspaces (1):", output)
         self.assertIn("Removed cm.002/", output)
 
+    def test_clean_preserves_workspace_referenced_by_update_backup(self) -> None:
+        self.cm.WORKSPACES_DIR.mkdir()
+        backup_workspace = self.cm.WORKSPACES_DIR / "cm.001"
+        orphan = self.cm.WORKSPACES_DIR / "cm.002"
+        backup_workspace.mkdir()
+        orphan.mkdir()
+        client = FakeClient(
+            summaries=[
+                {
+                    "Names": ["/cm-update-backup-001-123-456"],
+                    "State": "exited",
+                    "Mounts": [
+                        {
+                            "Source": str(backup_workspace),
+                            "Destination": "/home/me/workspace",
+                        }
+                    ],
+                }
+            ]
+        )
+
+        result, output = self.run_clean(client, "y")
+
+        self.assertEqual(result, 0)
+        self.assertTrue(backup_workspace.exists())
+        self.assertFalse(orphan.exists())
+        self.assertIn("Orphaned workspaces (1):", output)
+        self.assertNotIn("cm.001/", output)
+        self.assertIn("Removed cm.002/", output)
+
     def test_clean_aborts_without_removing_orphans_when_prompt_declines(self) -> None:
         self.cm.WORKSPACES_DIR.mkdir()
         orphan = self.cm.WORKSPACES_DIR / "cm.002"
