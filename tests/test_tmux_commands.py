@@ -54,9 +54,9 @@ class TmuxCommandTests(unittest.TestCase):
 
         self.assertEqual((name, existed), ("cm-s3", True))
         self.assertEqual([call[0] for call in calls], [
-            ["has-session", "-t", "cm-s1"],
-            ["has-session", "-t", "cm-s2"],
-            ["has-session", "-t", "cm-s3"],
+            ["has-session", "-t", "=cm-s1"],
+            ["has-session", "-t", "=cm-s2"],
+            ["has-session", "-t", "=cm-s3"],
         ])
 
     def run_with_stdout(self, func, args):
@@ -70,7 +70,7 @@ class TmuxCommandTests(unittest.TestCase):
 
         def fake_run_tmux(args, **kwargs):
             calls.append(args)
-            return types.SimpleNamespace(returncode=0 if args[-1] == "cm-s1" else 1)
+            return types.SimpleNamespace(returncode=0 if args[-1] == "=cm-s1" else 1)
 
         with mock.patch.object(self.cm, "run_tmux", fake_run_tmux):
             result, output = self.run_with_stdout(
@@ -82,8 +82,8 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("Killed session 'cm-s1'", output)
         self.assertIn("Session 'missing' not found", output)
         self.assertEqual(calls, [
-            ["kill-session", "-t", "cm-s1"],
-            ["kill-session", "-t", "missing"],
+            ["kill-session", "-t", "=cm-s1"],
+            ["kill-session", "-t", "=missing"],
         ])
 
     def test_cmd_kill_all_filters_cm_sessions_and_prompts(self) -> None:
@@ -107,8 +107,8 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("Killed session 'cm'", output)
         self.assertIn("Killed session 'cm-s2'", output)
         self.assertEqual(calls[1:], [
-            ["kill-session", "-t", "cm"],
-            ["kill-session", "-t", "cm-s2"],
+            ["kill-session", "-t", "=cm"],
+            ["kill-session", "-t", "=cm-s2"],
         ])
 
     def test_cmd_kill_all_aborts_on_declined_prompt(self) -> None:
@@ -143,9 +143,9 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertIn("synchronize-panes on for 'cm-s1'", output)
         self.assertEqual(calls, [
-            ["has-session", "-t", "cm-s1"],
-            ["list-windows", "-t", "cm-s1", "-F", "#{window_index}:#{window_panes}"],
-            ["setw", "-t", "cm-s1:0", "synchronize-panes", "on"],
+            ["has-session", "-t", "=cm-s1"],
+            ["list-windows", "-t", "=cm-s1", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "=cm-s1:0", "synchronize-panes", "on"],
         ])
 
         calls.clear()
@@ -168,10 +168,10 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("synchronize-panes off for 'cm'", output)
         self.assertIn("synchronize-panes off for 'cm-s2'", output)
         self.assertEqual(calls[1:], [
-            ["list-windows", "-t", "cm", "-F", "#{window_index}:#{window_panes}"],
-            ["setw", "-t", "cm:0", "synchronize-panes", "off"],
-            ["list-windows", "-t", "cm-s2", "-F", "#{window_index}:#{window_panes}"],
-            ["setw", "-t", "cm-s2:0", "synchronize-panes", "off"],
+            ["list-windows", "-t", "=cm", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "=cm:0", "synchronize-panes", "off"],
+            ["list-windows", "-t", "=cm-s2", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "=cm-s2:0", "synchronize-panes", "off"],
         ])
 
     def test_cmd_sync_warns_and_skips_window_only_sessions(self) -> None:
@@ -232,7 +232,7 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("Warning: Existing session found, creating 'cm-s1'", output)
         self.assertIn("cannot synchronize input across windows", output)
         self.assertNotIn(["setw", "-t", "cm-s1", "synchronize-panes", "on"], commands)
-        self.assertEqual(exec_calls, [["switch-client", "-t", "cm-s1"]])
+        self.assertEqual(exec_calls, [["switch-client", "-t", "=cm-s1"]])
 
 
 if __name__ == "__main__":

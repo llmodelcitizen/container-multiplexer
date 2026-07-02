@@ -136,6 +136,14 @@ def run_tmux(args: list[str], **kwargs) -> subprocess.CompletedProcess:
         sys.exit(f"Error: tmux command failed: {' '.join(args)}")
 
 
+def tmux_exact_target(target: str) -> str:
+    return f"={target}"
+
+
+def tmux_exact_window_target(session: str, window: str) -> str:
+    return f"={session}:{window}"
+
+
 def exec_tmux(args: list[str]) -> None:
     """Replace current process with tmux command, printing it to stderr first."""
     cmd = ["tmux"] + args
@@ -148,7 +156,13 @@ def exec_tmux(args: list[str]) -> None:
 
 def _tmux_window_pane_counts(session: str) -> list[tuple[str, int]]:
     result = run_tmux(
-        ["list-windows", "-t", session, "-F", "#{window_index}:#{window_panes}"],
+        [
+            "list-windows",
+            "-t",
+            tmux_exact_target(session),
+            "-F",
+            "#{window_index}:#{window_panes}",
+        ],
         capture_output=True,
         text=True,
     )
@@ -182,7 +196,9 @@ def set_session_synchronize_panes(session: str, state: str) -> bool:
         _print_window_sync_warning(session)
         return False
 
-    targets = [f"{session}:{index}" for index, _ in windows] or [session]
+    targets = [tmux_exact_window_target(session, index) for index, _ in windows]
+    if not targets:
+        targets = [tmux_exact_target(session)]
     for target in targets:
         run_tmux(["setw", "-t", target, "synchronize-panes", state], check=True)
     print(f"synchronize-panes {state} for '{session}'")
@@ -683,7 +699,7 @@ def get_next_session_name() -> tuple[str, bool]:
     existed = False
     while True:
         name = f"cm-s{n}"
-        result = run_tmux(["has-session", "-t", name],
+        result = run_tmux(["has-session", "-t", tmux_exact_target(name)],
                                 capture_output=True)
         if result.returncode != 0:
             return name, existed
@@ -2452,9 +2468,9 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
     # Switch or attach to session (replaces current process)
     if os.environ.get("TMUX"):
-        exec_tmux(["switch-client", "-t", session_name])
+        exec_tmux(["switch-client", "-t", tmux_exact_target(session_name)])
     else:
-        exec_tmux(["attach", "-t", session_name])
+        exec_tmux(["attach", "-t", tmux_exact_target(session_name)])
 
 
 def cmd_win(args: argparse.Namespace) -> int:
@@ -2505,9 +2521,9 @@ def cmd_win(args: argparse.Namespace) -> int:
 
     # Switch or attach to session (replaces current process)
     if os.environ.get("TMUX"):
-        exec_tmux(["switch-client", "-t", session_name])
+        exec_tmux(["switch-client", "-t", tmux_exact_target(session_name)])
     else:
-        exec_tmux(["attach", "-t", session_name])
+        exec_tmux(["attach", "-t", tmux_exact_target(session_name)])
 
 
 def cmd_kill(args: argparse.Namespace) -> int:
@@ -2515,7 +2531,7 @@ def cmd_kill(args: argparse.Namespace) -> int:
     # If specific sessions provided, kill them directly
     if args.sessions:
         for session in args.sessions:
-            result = run_tmux(["kill-session", "-t", session],
+            result = run_tmux(["kill-session", "-t", tmux_exact_target(session)],
                                     capture_output=True)
             if result.returncode != 0:
                 print(f"Session '{session}' not found")
@@ -2550,7 +2566,7 @@ def cmd_kill(args: argparse.Namespace) -> int:
         return 1
 
     for session in cm_sessions:
-        run_tmux(["kill-session", "-t", session], capture_output=True)
+        run_tmux(["kill-session", "-t", tmux_exact_target(session)], capture_output=True)
         print(f"Killed session '{session}'")
 
     return 0
@@ -2563,7 +2579,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # If specific sessions provided, use those
     if args.sessions:
         for session in args.sessions:
-            result = run_tmux(["has-session", "-t", session], capture_output=True)
+            result = run_tmux(
+                ["has-session", "-t", tmux_exact_target(session)],
+                capture_output=True,
+            )
             if result.returncode != 0:
                 print(f"Session '{session}' not found")
             else:
