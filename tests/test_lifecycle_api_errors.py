@@ -16,6 +16,8 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
+        self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
+        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
 
     def capture_stdout(self, func, *args):
         stdout = io.StringIO()
@@ -23,6 +25,14 @@ class LifecycleAPIErrorTests(unittest.TestCase):
                 mock.patch.object(self.cm, "is_native_linux_host", return_value=False):
             result = func(*args)
         return result, stdout.getvalue()
+
+    def capture_output(self, func, *args):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr), \
+                mock.patch.object(self.cm, "is_native_linux_host", return_value=False):
+            result = func(*args)
+        return result, stdout.getvalue(), stderr.getvalue()
 
     def test_start_existing_container_reports_api_error_and_port_hint(self) -> None:
         container = FakeContainer("cm-001", status="exited")
@@ -34,6 +44,17 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("Failed to start instance 1: port is already allocated", output)
         self.assertIn("cm rm 1; cm start 1", output)
+
+    def test_start_existing_container_validates_authorized_keys_first(self) -> None:
+        container = FakeContainer("cm-001", status="exited")
+        client = FakeClient({"cm-001": container})
+        self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "missing_authorized_keys"
+
+        result, _stdout, stderr = self.capture_output(self.cm.start_instance, client, 1)
+
+        self.assertFalse(result)
+        self.assertEqual(container.started, 0)
+        self.assertIn("authorized_keys source is not a file", stderr)
 
     def test_stop_reports_api_error_without_traceback(self) -> None:
         container = FakeContainer("cm-001", status="running")

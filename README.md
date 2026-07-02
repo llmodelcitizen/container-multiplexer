@@ -164,6 +164,7 @@ Use `cm list` to see whether each instance is using the current local `cm:latest
 `cm` expects a non-empty `~/.cm/authorized_keys` file. The installer creates it from `~/.ssh/cm_ed25519.pub` if needed. Running `./cm.py` from this checkout and running an installed `cm` both use the same file.
 
 `cm` mounts that file into each container at `/tmp/cm_authorized_keys`; `entrypoint.sh` then installs it as `/home/me/.ssh/authorized_keys`.
+`cm start` and `cm restart` abort before starting containers if the source file is missing, empty, or unreadable.
 
 `cm ssh N` connects as `me@127.0.0.1` on the instance's published SSH port using `~/.ssh/cm_ed25519` by default. You do not need to create a `Host cm` entry in your SSH config. To force a different private key, use:
 

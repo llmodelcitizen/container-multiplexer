@@ -842,6 +842,11 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
         if container.status == "running":
             print(f"Instance {n} is already running")
             return True
+        try:
+            auth_keys = validate_authorized_keys_path()
+        except AuthorizedKeysError as e:
+            print(e, file=sys.stderr)
+            return False
         # Start existing stopped container
         try:
             container.start()
@@ -863,8 +868,14 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
         print(_cm_image_missing_message())
         return False
 
+    try:
+        auth_keys = validate_authorized_keys_path()
+    except AuthorizedKeysError as e:
+        print(e, file=sys.stderr)
+        return False
+
     # Create and start new container
-    port, error = try_start_container(client, n, cfg)
+    port, error = try_start_container(client, n, cfg, auth_keys=auth_keys)
     if error:
         print(f"Failed to start instance {n}: {error}")
         return False
@@ -922,6 +933,11 @@ def restart_instance(client: docker.DockerClient, n: int) -> bool:
         identity_error = get_existing_container_identity_error(container, n)
         if identity_error:
             print(identity_error)
+            return False
+        try:
+            validate_authorized_keys_path()
+        except AuthorizedKeysError as e:
+            print(e, file=sys.stderr)
             return False
     if container and get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
         docker_sdk = get_docker_sdk()
@@ -1245,6 +1261,10 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
                 return (n, False, identity_error)
             if container.status == "running":
                 return (n, True, f"Instance {n} is already running")
+            try:
+                validate_authorized_keys_path()
+            except AuthorizedKeysError as e:
+                return (n, False, str(e))
             # Start existing stopped container
             container.start()
             return (n, True, f"Started instance {n} (existing container)")
@@ -1254,7 +1274,12 @@ def _start_instance_worker(n: int) -> tuple[int, bool, str]:
         except docker_sdk.errors.NotFound:
             return (n, False, _cm_image_missing_message())
 
-        port, error = try_start_container(client, n, cfg)
+        try:
+            auth_keys = validate_authorized_keys_path()
+        except AuthorizedKeysError as e:
+            return (n, False, str(e))
+
+        port, error = try_start_container(client, n, cfg, auth_keys=auth_keys)
         if error:
             return (n, False, f"Failed to start instance {n}: {error}")
 
@@ -1308,6 +1333,10 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
             identity_error = get_existing_container_identity_error(container, n)
             if identity_error:
                 return (n, False, identity_error)
+            try:
+                validate_authorized_keys_path()
+            except AuthorizedKeysError as e:
+                return (n, False, str(e))
             if get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
                 try:
                     container.stop()
@@ -1322,7 +1351,12 @@ def _restart_instance_worker(n: int) -> tuple[int, bool, str]:
         except docker_sdk.errors.NotFound:
             return (n, False, _cm_image_missing_message())
 
-        port, error = try_start_container(client, n, cfg)
+        try:
+            auth_keys = validate_authorized_keys_path()
+        except AuthorizedKeysError as e:
+            return (n, False, str(e))
+
+        port, error = try_start_container(client, n, cfg, auth_keys=auth_keys)
         if error:
             return (n, False, f"Failed to restart instance {n}: {error}")
 
@@ -1415,6 +1449,12 @@ def cmd_start(args: argparse.Namespace) -> int:
         print("No instances specified")
         return 1
 
+    try:
+        validate_authorized_keys_path()
+    except AuthorizedKeysError as e:
+        print(e, file=sys.stderr)
+        return 1
+
     if len(instances) > 1:
         success = run_parallel(_start_instance_worker, instances)
     else:
@@ -1442,6 +1482,12 @@ def cmd_restart(args: argparse.Namespace) -> int:
 
     if not instances:
         print("No instances specified")
+        return 1
+
+    try:
+        validate_authorized_keys_path()
+    except AuthorizedKeysError as e:
+        print(e, file=sys.stderr)
         return 1
 
     if len(instances) > 1:

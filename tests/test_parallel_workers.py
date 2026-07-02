@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import tempfile
 import types
 import unittest
@@ -43,6 +45,18 @@ class ParallelWorkerTests(unittest.TestCase):
         self.assertEqual((n, success, message), (1, True, "Started instance 1 (existing container)"))
         self.assertEqual(old.started, 1)
         self.assertEqual(client.containers.run_calls, [])
+        self.assertEqual(client.closed, 1)
+
+    def test_start_worker_validates_authorized_keys_before_existing_container(self) -> None:
+        old = FakeContainer("cm-001", status="exited")
+        client = FakeClient({"cm-001": old})
+        self.cm.AUTHORIZED_KEYS_PATH.unlink()
+
+        n, success, message = self.run_worker(self.cm._start_instance_worker, client, 1)
+
+        self.assertEqual((n, success), (1, False))
+        self.assertIn("authorized_keys source is not a file", message)
+        self.assertEqual(old.started, 0)
         self.assertEqual(client.closed, 1)
 
     def test_start_worker_reports_missing_image(self) -> None:
@@ -172,6 +186,24 @@ class ParallelWorkerTests(unittest.TestCase):
 
                 self.assertEqual(result, 0)
                 self.assertEqual(calls, [(expected_worker, [1, 2])])
+
+    def test_cmd_start_validates_authorized_keys_before_parallel_workers(self) -> None:
+        self.cm.AUTHORIZED_KEYS_PATH.unlink()
+        stderr = io.StringIO()
+        calls = []
+
+        def fake_run_parallel(worker, instances):
+            calls.append((worker, instances))
+            return True
+
+        with contextlib.redirect_stderr(stderr), \
+                mock.patch.object(self.cm, "run_parallel", fake_run_parallel), \
+                mock.patch.object(self.cm, "is_native_linux_host", return_value=False):
+            result = self.cm.cmd_start(types.SimpleNamespace(instances=["1", "2"]))
+
+        self.assertEqual(result, 1)
+        self.assertEqual(calls, [])
+        self.assertIn("authorized_keys source is not a file", stderr.getvalue())
 
 
 if __name__ == "__main__":
