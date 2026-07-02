@@ -140,6 +140,49 @@ def exec_tmux(args: list[str]) -> None:
         sys.exit("Error: tmux is not installed.")
 
 
+def _tmux_window_pane_counts(session: str) -> list[tuple[str, int]]:
+    result = run_tmux(
+        ["list-windows", "-t", session, "-F", "#{window_index}:#{window_panes}"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return []
+
+    windows: list[tuple[str, int]] = []
+    for line in result.stdout.splitlines():
+        index, sep, panes = line.partition(":")
+        if not sep:
+            continue
+        try:
+            windows.append((index, int(panes)))
+        except ValueError:
+            continue
+    return windows
+
+
+def _print_window_sync_warning(session: str | None = None) -> None:
+    target = f" for session '{session}'" if session else ""
+    print(
+        f"Warning: synchronize-panes is not enabled{target}; "
+        "tmux cannot synchronize input across windows. "
+        "Use 'cm pan --sync' for synchronized input."
+    )
+
+
+def set_session_synchronize_panes(session: str, state: str) -> bool:
+    windows = _tmux_window_pane_counts(session)
+    if state == "on" and len(windows) > 1 and all(panes == 1 for _, panes in windows):
+        _print_window_sync_warning(session)
+        return False
+
+    targets = [f"{session}:{index}" for index, _ in windows] or [session]
+    for target in targets:
+        run_tmux(["setw", "-t", target, "synchronize-panes", state], check=True)
+    print(f"synchronize-panes {state} for '{session}'")
+    return True
+
+
 def get_client() -> docker.DockerClient:
     """Get Docker client."""
     docker_sdk = get_docker_sdk()
@@ -2281,8 +2324,7 @@ def cmd_panes(args: argparse.Namespace) -> int:
 
     # Enable synchronized panes if requested
     if args.sync:
-        run_tmux(["setw", "-t", session_name, "synchronize-panes", "on"],
-                       check=True)
+        set_session_synchronize_panes(session_name, "on")
 
     # Switch or attach to session (replaces current process)
     if os.environ.get("TMUX"):
@@ -2335,8 +2377,7 @@ def cmd_win(args: argparse.Namespace) -> int:
 
     # Enable synchronized panes if requested
     if args.sync:
-        run_tmux(["setw", "-t", session_name, "synchronize-panes", "on"],
-                       check=True)
+        _print_window_sync_warning()
 
     # Switch or attach to session (replaces current process)
     if os.environ.get("TMUX"):
@@ -2402,9 +2443,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             if result.returncode != 0:
                 print(f"Session '{session}' not found")
             else:
-                run_tmux(["setw", "-t", session, "synchronize-panes", state],
-                         check=True)
-                print(f"synchronize-panes {state} for '{session}'")
+                set_session_synchronize_panes(session, state)
         return 0
 
     # No sessions specified - find all cm sessions
@@ -2422,8 +2461,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
         return 1
 
     for session in cm_sessions:
-        run_tmux(["setw", "-t", session, "synchronize-panes", state], check=True)
-        print(f"synchronize-panes {state} for '{session}'")
+        set_session_synchronize_panes(session, state)
 
     return 0
 
@@ -2659,7 +2697,7 @@ def main() -> int:
     p_win.add_argument("instances", nargs="+", metavar="N",
                        help="Instance number(s): 1, 1-5, or 1 3 5")
     p_win.add_argument("--sync", "-s", action="store_true",
-                       help="Enable synchronize-panes")
+                       help="Warn: tmux cannot synchronize input across windows")
     p_win.set_defaults(func=cmd_win)
 
     # kill

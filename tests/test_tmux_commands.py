@@ -130,6 +130,8 @@ class TmuxCommandTests(unittest.TestCase):
 
         def fake_specific_run_tmux(args, **kwargs):
             calls.append(args)
+            if args[:2] == ["list-windows", "-t"]:
+                return types.SimpleNamespace(returncode=0, stdout="0:2\n")
             return types.SimpleNamespace(returncode=0)
 
         with mock.patch.object(self.cm, "run_tmux", fake_specific_run_tmux):
@@ -142,7 +144,8 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("synchronize-panes on for 'cm-s1'", output)
         self.assertEqual(calls, [
             ["has-session", "-t", "cm-s1"],
-            ["setw", "-t", "cm-s1", "synchronize-panes", "on"],
+            ["list-windows", "-t", "cm-s1", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "cm-s1:0", "synchronize-panes", "on"],
         ])
 
         calls.clear()
@@ -151,6 +154,8 @@ class TmuxCommandTests(unittest.TestCase):
             calls.append(args)
             if args[:2] == ["list-sessions", "-F"]:
                 return types.SimpleNamespace(returncode=0, stdout="cm\ncm-s2\nnot-cm\n")
+            if args[:2] == ["list-windows", "-t"]:
+                return types.SimpleNamespace(returncode=0, stdout="0:2\n")
             return types.SimpleNamespace(returncode=0)
 
         with mock.patch.object(self.cm, "run_tmux", fake_all_run_tmux):
@@ -163,9 +168,33 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertIn("synchronize-panes off for 'cm'", output)
         self.assertIn("synchronize-panes off for 'cm-s2'", output)
         self.assertEqual(calls[1:], [
-            ["setw", "-t", "cm", "synchronize-panes", "off"],
-            ["setw", "-t", "cm-s2", "synchronize-panes", "off"],
+            ["list-windows", "-t", "cm", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "cm:0", "synchronize-panes", "off"],
+            ["list-windows", "-t", "cm-s2", "-F", "#{window_index}:#{window_panes}"],
+            ["setw", "-t", "cm-s2:0", "synchronize-panes", "off"],
         ])
+
+    def test_cmd_sync_warns_and_skips_window_only_sessions(self) -> None:
+        calls = []
+
+        def fake_run_tmux(args, **kwargs):
+            calls.append(args)
+            if args[:2] == ["list-windows", "-t"]:
+                return types.SimpleNamespace(returncode=0, stdout="0:1\n1:1\n")
+            return types.SimpleNamespace(returncode=0)
+
+        with mock.patch.object(self.cm, "run_tmux", fake_run_tmux):
+            result, output = self.run_with_stdout(
+                self.cm.cmd_sync,
+                types.SimpleNamespace(state="on", sessions=["cm-s1"]),
+            )
+
+        self.assertEqual(result, 0)
+        self.assertIn("cannot synchronize input across windows", output)
+        self.assertNotIn(
+            ["setw", "-t", "cm-s1", "synchronize-panes", "on"],
+            calls,
+        )
 
     def test_cmd_panes_returns_when_no_requested_instances_are_running(self) -> None:
         with mock.patch.object(self.cm, "get_client", return_value=object()), \
@@ -178,7 +207,7 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("No running instances to connect to", output)
 
-    def test_cmd_win_syncs_and_switches_existing_tmux_client(self) -> None:
+    def test_cmd_win_sync_warns_and_switches_existing_tmux_client(self) -> None:
         commands = []
         exec_calls = []
 
@@ -201,7 +230,8 @@ class TmuxCommandTests(unittest.TestCase):
 
         self.assertIsNone(result)
         self.assertIn("Warning: Existing session found, creating 'cm-s1'", output)
-        self.assertIn(["setw", "-t", "cm-s1", "synchronize-panes", "on"], commands)
+        self.assertIn("cannot synchronize input across windows", output)
+        self.assertNotIn(["setw", "-t", "cm-s1", "synchronize-panes", "on"], commands)
         self.assertEqual(exec_calls, [["switch-client", "-t", "cm-s1"]])
 
 

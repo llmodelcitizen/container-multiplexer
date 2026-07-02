@@ -245,7 +245,7 @@ cm inspect 1        # Diagnose SSH, health, workspace, image drift, and UID/GID 
 # Tmux sessions     (for working with many container instances)
 cm pan 1-9          # Use split panes, each SSH'd to a running instance
 cm pan 1-9 --sync   # Same, with synchronize-panes enabled
-cm win 1-2          # Use tmux windows instead of panes for running instances
+cm win 1-2          # Use tmux windows instead of panes; sync is pane-only
 cm kill             # Kill cm tmux sessions (all by default, with confirmation)
 cm sync on          # Enable synchronize-panes for cm tmux sessions
 
