@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -56,6 +57,18 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertEqual(container.started, 0)
         self.assertIn("authorized_keys source is not a file", stderr)
 
+    def test_start_routes_unmanaged_collision_to_stderr(self) -> None:
+        # Unmanaged name collisions go to stderr, matching the neighboring
+        # preflight error and the parallel path's error stream.
+        container = FakeContainer("cm-001", status="exited", labels={})
+        client = FakeClient({"cm-001": container})
+
+        result, stdout, stderr = self.capture_output(self.cm.start_instance, client, 1)
+
+        self.assertFalse(result)
+        self.assertIn("unmanaged container", stderr)
+        self.assertNotIn("unmanaged container", stdout)
+
     def test_stop_reports_api_error_without_traceback(self) -> None:
         container = FakeContainer("cm-001", status="running")
         container.stop = mock.Mock(side_effect=FakeAPIError("stop failed"))
@@ -105,7 +118,7 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(container.stopped, 1)
         self.assertEqual(container.started, 1)
-        self.assertIn("Started instance 1 (existing container)", output)
+        self.assertIn("Restarted instance 1 (existing container)", output)
 
     def test_remove_forces_restarting_container(self) -> None:
         registry: dict[str, FakeContainer] = {}
@@ -119,6 +132,59 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertEqual(container.remove_calls, [{"force": True}])
         self.assertNotIn("cm-001", registry)
         self.assertIn("Removed instance 1 (forced from restarting state)", output)
+
+    def _run_cmd_rm(self, client, instances):
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(self.cm, "get_client", return_value=client), \
+                mock.patch.object(self.cm, "is_native_linux_host", return_value=False), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            result = self.cm.cmd_rm(types.SimpleNamespace(instances=instances))
+        return result, stdout.getvalue(), stderr.getvalue()
+
+    def test_cmd_rm_omits_workspace_note_for_running_instance(self) -> None:
+        workspace = self.cm.get_instance_config(1)["workspace"]
+        workspace.mkdir(parents=True)
+        registry: dict[str, FakeContainer] = {}
+        container = FakeContainer("cm-001", status="running", registry=registry)
+        registry["cm-001"] = container
+        client = FakeClient(registry)
+
+        result, stdout, stderr = self._run_cmd_rm(client, ["1"])
+
+        combined = stdout + stderr
+        self.assertEqual(result, 1)
+        self.assertIn("is running (use 'stop' instead)", combined)
+        self.assertNotIn("remain on disk", combined)
+
+    def test_cmd_rm_notes_workspace_for_removed_instance(self) -> None:
+        workspace = self.cm.get_instance_config(1)["workspace"]
+        workspace.mkdir(parents=True)
+        registry: dict[str, FakeContainer] = {}
+        container = FakeContainer("cm-001", status="exited", registry=registry)
+        registry["cm-001"] = container
+        client = FakeClient(registry)
+
+        result, stdout, stderr = self._run_cmd_rm(client, ["1"])
+
+        combined = stdout + stderr
+        self.assertEqual(result, 0)
+        self.assertIn("Removed instance 1", combined)
+        self.assertIn("remain on disk", combined)
+        self.assertIn(str(workspace), combined)
+
+    def test_cmd_rm_notes_workspace_for_nonexistent_instance(self) -> None:
+        # No container, but an orphaned workspace dir remains -> note is valid.
+        workspace = self.cm.get_instance_config(1)["workspace"]
+        workspace.mkdir(parents=True)
+        client = FakeClient({})
+
+        result, stdout, stderr = self._run_cmd_rm(client, ["1"])
+
+        combined = stdout + stderr
+        self.assertEqual(result, 1)
+        self.assertIn("Instance 1 does not exist", combined)
+        self.assertIn("remain on disk", combined)
 
 
 if __name__ == "__main__":

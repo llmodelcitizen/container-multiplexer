@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import tempfile
@@ -35,6 +36,9 @@ def make_fake_python(fake_bin: Path) -> Path:
     write_executable(
         python,
         """#!/bin/sh
+if [ "$1" = "-c" ]; then
+    exit 0
+fi
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
     venv_dir="$3"
     mkdir -p "$venv_dir/bin"
@@ -137,9 +141,74 @@ class InstallUninstallTests(unittest.TestCase):
                 (install_dir / "cm").read_text(encoding="utf-8"),
             )
             installed_script = (install_dir / "cm.py").read_text(encoding="utf-8")
-            self.assertIn('VERSION = "v1.2.3/feature&dirty"', installed_script)
-            self.assertIn("Version: v1.2.3/feature&dirty", result.stdout)
+            # '/' and '&' are stripped by version sanitization (issue #41).
+            self.assertIn('VERSION = "v1.2.3featuredirty"', installed_script)
+            self.assertIn("Version: v1.2.3featuredirty", result.stdout)
             self.assertIn("Installed successfully!", result.stdout)
+
+    def test_install_sanitizes_version_containing_a_double_quote(self) -> None:
+        # A git tag may legally contain '"', which would otherwise inject an
+        # unterminated Python string literal into cm.py (issue #41).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            install_dir = root / "bin"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            home_ssh = home / ".ssh"
+            home_ssh.mkdir(parents=True)
+            (home_ssh / "cm_ed25519.pub").write_text("ssh-ed25519 fake-key\n", encoding="utf-8")
+            fake_python = make_fake_python(fake_bin)
+            make_fake_git(fake_bin)
+
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "CM_INSTALL_DIR": str(install_dir),
+                "CM_PYTHON": str(fake_python),
+                "CM_FAKE_PIP_LOG": str(root / "pip.log"),
+                "CM_FAKE_GIT_VERSION": 'v1.0"rc',
+                "PATH": f"{fake_bin}{os.pathsep}{env['PATH']}",
+            })
+            result = subprocess.run(
+                ["bash", str(INSTALL_SH)],
+                input="",
+                text=True,
+                capture_output=True,
+                check=False,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            installed_script = (install_dir / "cm.py").read_text(encoding="utf-8")
+            self.assertIn('VERSION = "v1.0rc"', installed_script)
+            self.assertNotIn('"dev"', installed_script)
+            # The injected file must remain syntactically valid Python.
+            ast.parse(installed_script)
+
+    def test_install_rejects_python_older_than_39(self) -> None:
+        # A python that reports < 3.9 must be refused before anything is built (issue #60).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            install_dir = root / "bin"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            (home / ".ssh").mkdir(parents=True)
+            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            old_python = fake_bin / "python3"
+            # Fail the version probe (`-c`) but otherwise behave like a python.
+            write_executable(
+                old_python,
+                '#!/bin/sh\nif [ "$1" = "-c" ]; then exit 1; fi\nexit 0\n',
+            )
+
+            result = run_install(home, install_dir, fake_python=old_python)
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("Python 3.9 or newer", result.stdout)
+            self.assertFalse((install_dir / ".cm-venv").exists())
+            self.assertFalse((install_dir / "cm").exists())
 
     def test_install_errors_when_default_public_key_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -241,6 +310,77 @@ class InstallUninstallTests(unittest.TestCase):
             self.assertIn("Using default install directory", result.stdout)
             self.assertTrue((default_install_dir / "cm").is_file())
             self.assertFalse((root / 'INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"').exists())
+
+    def test_install_expands_leading_tilde_slash(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            (home / ".ssh").mkdir(parents=True)
+            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            fake_python = make_fake_python(fake_bin)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "CM_INSTALL_DIR": "~/mybin",
+                "CM_PYTHON": str(fake_python),
+                "CM_FAKE_PIP_LOG": str(root / "pip.log"),
+            })
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SH)],
+                input="", text=True, capture_output=True, check=False, env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((home / "mybin" / "cm").is_file())
+
+    def test_install_rejects_user_tilde_path(self) -> None:
+        # '~user/...' must be rejected, not mangled into '${HOME}user/...' (issue #42).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            home = Path(temp_dir) / "home"
+            home.mkdir(parents=True)
+            env = os.environ.copy()
+            env.update({"HOME": str(home), "CM_INSTALL_DIR": "~eve/bin"})
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SH), "--uninstall"],
+                input="", text=True, capture_output=True, check=False, env=env,
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("'~user' home expansion is not supported", result.stderr)
+
+    def test_install_normalizes_trailing_slash_and_skips_path_guidance(self) -> None:
+        # A trailing slash must not defeat the PATH-membership check (issue #43).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            home = root / "home"
+            install_dir = root / "bin"
+            fake_bin = root / "fake-bin"
+            fake_bin.mkdir(parents=True)
+            (home / ".ssh").mkdir(parents=True)
+            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            fake_python = make_fake_python(fake_bin)
+            env = os.environ.copy()
+            env.update({
+                "HOME": str(home),
+                "CM_INSTALL_DIR": f"{install_dir}/",
+                "CM_PYTHON": str(fake_python),
+                "CM_FAKE_PIP_LOG": str(root / "pip.log"),
+                # install_dir (no trailing slash) is already on PATH.
+                "PATH": f"{install_dir}{os.pathsep}{env['PATH']}",
+            })
+
+            result = subprocess.run(
+                ["bash", str(INSTALL_SH)],
+                input="", text=True, capture_output=True, check=False, env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue((install_dir / "cm").is_file())
+            self.assertNotIn("is not in your PATH", result.stdout)
 
     def test_uninstall_removes_files_and_venv_then_prints_summary(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

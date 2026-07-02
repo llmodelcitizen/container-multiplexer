@@ -30,7 +30,7 @@ docker info
 
 If `docker info` works through a Docker CLI context but `cm` cannot connect, set `DOCKER_HOST` to that context's Docker endpoint, for example `unix://$HOME/.colima/default/docker.sock`.
 
-Install `tmux` and Python 3:
+Install `tmux` and Python 3.9+:
 
 ```bash
 sudo apt install tmux python3 python3-venv
@@ -252,6 +252,9 @@ cm win 1-2          # Use tmux windows instead of panes; sync is pane-only
 cm kill             # Kill cm tmux sessions (all by default, with confirmation)
 cm sync on          # Enable synchronize-panes for cm tmux sessions
 
+# Shell
+cm autocomplete     # Print the bash completion script
+
 # Version
 cm version          # Print version
 ```
@@ -263,8 +266,11 @@ cm start 1 3 5      # Start a specific set of instances
 cm stop 1-12        # Stop a range of running instances
 cm restart 7        # Restart one instance
 cm update 7 --yes   # Recreate without prompting
+cm update 7 -y      # Short form of --yes
 cm update 7 --force # Recreate even when image status is current or unknown
 cm rm 1-12          # Remove a range of non-running containers
+cm inspect 1 --logs 50 --verbose  # Diagnose with recent logs and extra detail
+cm inspect 1 --no-exec            # Diagnose without running commands in the container
 cm pan 1-9 -s       # Short form of --sync
 cm sync off         # Disable synchronize-panes for cm tmux sessions
 cm kill cm-s1       # Kill one named cm tmux session
@@ -273,11 +279,16 @@ cm sync off cm-s1   # Disable synchronize-panes for one named cm tmux session
 
 ## Behavior Notes
 
+- Instance numbers must be between 1 and 499.
 - Multi-instance `start`, `stop`, `restart`, `update`, and `rm` operations run in parallel.
-- SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` retries higher ports when a port is busy. Use `cm list` instead of assuming the port.
+- `cm restart N` starts instance N, creating it if it does not exist, while `cm restart all` only restarts currently running instances.
+- Instances do not auto-start on host boot; run `cm start` again after a reboot.
+- SSH ports bind to `127.0.0.1` and default to `2200 + N`, but `cm` tries up to 100 consecutive ports when a port is busy before giving up. Use `cm list` instead of assuming the port.
 - `cm list` compares each container image ID to the current local `cm:latest` image ID and reports `current`, `stale`, or `unknown`.
 - `cm update` recreates containers from `cm:latest`. It preserves the workspace bind mount, but changes inside the container outside `/home/me/workspace` are lost.
 - Workspaces live under `~/.cm/workspaces/` (`~/.cm/workspaces/cm.001/`, `~/.cm/workspaces/cm.002/`, and so on) and are mounted at `/home/me/workspace`.
+- `cm clean` only considers workspace directories named exactly `cm.001` through `cm.499` that have no matching container; anything else under `~/.cm/workspaces/` is ignored.
+- On native Linux, code running inside a container can write files as any uid (including root-owned setuid binaries) into its `~/.cm/workspaces/cm.NNN/` directory, so do not execute workspace artifacts you do not trust. Docker userns-remap provides stronger isolation.
 - Tmux sessions are named `cm-s1`, `cm-s2`, and so on.
 - Clean exit from a container shell closes the tmux pane. Connection errors drop to a host shell.
 - When launched from an existing tmux or byobu session, `cm pan` and `cm win` switch the current tmux client into the new session; when that session is destroyed, tmux stays attached to another available session instead of detaching.

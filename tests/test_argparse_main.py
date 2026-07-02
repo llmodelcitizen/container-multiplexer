@@ -93,6 +93,45 @@ class ArgparseMainTests(unittest.TestCase):
         self.assertEqual(ctx.exception.code, 2)
         self.assertIn("invalid choice", stderr.getvalue())
 
+    def test_instance_arg_validator_enforces_parse_instances_range(self) -> None:
+        self.assertEqual(self.cm._instance_arg("1"), 1)
+        self.assertEqual(self.cm._instance_arg("499"), 499)
+
+        with self.assertRaises(self.cm.argparse.ArgumentTypeError) as ctx:
+            self.cm._instance_arg("0")
+        self.assertIn("must be positive", str(ctx.exception))
+
+        with self.assertRaises(self.cm.argparse.ArgumentTypeError) as ctx:
+            self.cm._instance_arg("-1")
+        self.assertIn("must be positive", str(ctx.exception))
+
+        with self.assertRaises(self.cm.argparse.ArgumentTypeError) as ctx:
+            self.cm._instance_arg("500")
+        self.assertIn("exceeds maximum (499)", str(ctx.exception))
+
+        with self.assertRaises(self.cm.argparse.ArgumentTypeError):
+            self.cm._instance_arg("abc")
+
+    def test_main_rejects_out_of_range_single_instance_args(self) -> None:
+        cases = [
+            (["ssh", "9999"], "exceeds maximum (499)"),
+            (["ssh", "0"], "must be positive"),
+            (["logs", "9999"], "exceeds maximum (499)"),
+            (["inspect", "9999"], "exceeds maximum (499)"),
+        ]
+        for argv, expected in cases:
+            with self.subTest(argv=argv):
+                stderr = io.StringIO()
+                with mock.patch.object(self.cm.sys, "argv", ["cm.py", *argv]), \
+                        contextlib.redirect_stderr(stderr), \
+                        self.assertRaises(SystemExit) as ctx:
+                    self.cm.main()
+
+                self.assertEqual(ctx.exception.code, 2)
+                err = stderr.getvalue()
+                self.assertIn("argument N", err)
+                self.assertIn(expected, err)
+
     def test_main_returns_130_on_keyboard_interrupt(self) -> None:
         def interrupted(args):
             raise KeyboardInterrupt

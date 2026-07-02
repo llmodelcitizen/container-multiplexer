@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import os
 import re
 import subprocess
 import sys
@@ -38,7 +39,9 @@ class CompletionTests(unittest.TestCase):
 
     def test_cmd_complete_instances_scans_workspace_dirs_without_docker(self) -> None:
         self.cm.WORKSPACES_DIR.mkdir()
-        for name in ("cm.003", "cm.001", "cm.bad", "notes"):
+        # Lookalikes (cm.001.bak, cm.5, cm.500) must be ignored just like clean.
+        for name in ("cm.003", "cm.001", "cm.bad", "notes",
+                     "cm.001.bak", "cm.5", "cm.500"):
             (self.cm.WORKSPACES_DIR / name).mkdir()
 
         result, output = self.run_complete(mode="instances", table=False)
@@ -194,6 +197,108 @@ printf '%s\n' "${COMPREPLY[@]}"
         )
 
         self.assertEqual(completions, ["cm", "cm-1"])
+
+    def test_autocomplete_logs_completes_instances_in_any_state(self) -> None:
+        # `cm logs` must complete over all managed instances (mode "instances"),
+        # not just running ones, since logs is most needed for exited containers.
+        completions = self.run_bash_completion_harness(
+            r'''
+source "$1"
+_init_completion() {
+    words=(cm logs 1)
+    cword=2
+    cur=1
+    prev=logs
+}
+cm() {
+    if [[ "$1" == "_complete" ]]; then
+        if [[ "$2" == "instances" ]]; then
+            printf '1 15 2\n'
+        else
+            printf '9\n'
+        fi
+    fi
+}
+_cm_completions
+printf '%s\n' "${COMPREPLY[@]}"
+'''
+        )
+
+        self.assertEqual(sorted(completions), ["1", "15"])
+
+    def test_autocomplete_ssh_completes_only_running_instances(self) -> None:
+        # `cm ssh` still restricts to running instances (mode "running").
+        completions = self.run_bash_completion_harness(
+            r'''
+source "$1"
+_init_completion() {
+    words=(cm ssh 1)
+    cword=2
+    cur=1
+    prev=ssh
+}
+cm() {
+    if [[ "$1" == "_complete" ]]; then
+        if [[ "$2" == "running" ]]; then
+            printf '1 12\n'
+        else
+            printf '1 12 13 14\n'
+        fi
+    fi
+}
+_cm_completions
+printf '%s\n' "${COMPREPLY[@]}"
+'''
+        )
+
+        self.assertEqual(sorted(completions), ["1", "12"])
+
+    def test_autocomplete_session_names_are_not_shell_expanded(self) -> None:
+        # A tmux session name containing a command substitution must never be
+        # executed during completion; compgen -W would expand it, so the kill
+        # branch builds COMPREPLY by hand.
+        marker = Path(self.temp_dir.name) / "pwned"
+        harness = (
+            'source "$1"\n'
+            "PAYLOAD='cm-$(touch${IFS}MARKER)'\n"
+            "tmux() { printf '%s\\n' \"$PAYLOAD\"; }\n"
+            '_init_completion() { words=(cm kill ""); cword=2; cur=""; prev=kill; return 0; }\n'
+            "_cm_completions\n"
+            "printf '%s\\n' \"${COMPREPLY[@]}\"\n"
+        ).replace("MARKER", str(marker))
+
+        completions = self.run_bash_completion_harness(harness)
+
+        self.assertFalse(marker.exists(), "session name was shell-expanded")
+        self.assertEqual(completions, ["cm-$(touch${IFS}" + str(marker) + ")"])
+
+    def test_autocomplete_no_tty_does_not_leak_dev_tty_errors(self) -> None:
+        # With no controlling terminal (setsid) the table hack must not spew
+        # "/dev/tty" redirection errors, while completion still works.
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.cm.cmd_autocomplete(types.SimpleNamespace())
+        harness = (
+            'source "$1"\n'
+            '_init_completion() { words=(cm ssh ""); cword=2; cur=""; prev=ssh; return 0; }\n'
+            "cm() { if [[ \"$1\" == \"_complete\" ]]; then printf '1 2 3\\n'; fi; }\n"
+            "_cm_completions\n"
+            "printf '%s\\n' \"${COMPREPLY[@]}\"\n"
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".bash") as temp:
+            temp.write(stdout.getvalue())
+            temp.flush()
+            result = subprocess.run(
+                ["bash", "-c", harness, "bash", temp.name],
+                text=True,
+                capture_output=True,
+                check=False,
+                preexec_fn=os.setsid,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("/dev/tty", result.stderr)
+        self.assertEqual(result.stdout.split(), ["1", "2", "3"])
 
     def test_completion_commands_are_accepted_subcommands(self) -> None:
         stdout = io.StringIO()

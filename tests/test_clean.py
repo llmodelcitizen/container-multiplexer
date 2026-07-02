@@ -83,6 +83,52 @@ class CleanCommandTests(unittest.TestCase):
         self.assertNotIn("cm.001/", output)
         self.assertIn("Removed cm.002/", output)
 
+    def test_clean_ignores_lookalike_names_but_offers_exact_orphans(self) -> None:
+        self.cm.WORKSPACES_DIR.mkdir()
+        orphan = self.cm.WORKSPACES_DIR / "cm.002"
+        lookalike_dirs = [
+            self.cm.WORKSPACES_DIR / "cm.001.bak",
+            self.cm.WORKSPACES_DIR / "cm.5",
+            self.cm.WORKSPACES_DIR / "cm.000",
+            self.cm.WORKSPACES_DIR / "cm.500",
+            self.cm.WORKSPACES_DIR / "scratch",
+            # Non-ASCII digits and a trailing newline must not slip past the
+            # "exactly cm.NNN" filter (int() would otherwise parse them).
+            self.cm.WORKSPACES_DIR / "cm.٠٠١",
+            self.cm.WORKSPACES_DIR / "cm.001\n",
+        ]
+        plain_file = self.cm.WORKSPACES_DIR / "cm.003"
+        for path in [orphan, *lookalike_dirs]:
+            path.mkdir()
+        plain_file.write_text("not a directory\n")
+
+        result, output = self.run_clean(FakeClient(), "y")
+
+        self.assertEqual(result, 0)
+        self.assertFalse(orphan.exists())
+        for path in lookalike_dirs:
+            self.assertTrue(path.exists())
+            self.assertNotIn(f"{path.name}/", output)
+        self.assertTrue(plain_file.exists())
+        self.assertIn("Orphaned workspaces (1):", output)
+        self.assertIn("Removed cm.002/", output)
+
+    def test_clean_lookalike_name_does_not_shadow_real_workspace(self) -> None:
+        # cm.001.bak must not be protected by (or mistaken for) container cm-001.
+        self.cm.WORKSPACES_DIR.mkdir()
+        live = self.cm.WORKSPACES_DIR / "cm.001"
+        lookalike = self.cm.WORKSPACES_DIR / "cm.001.bak"
+        live.mkdir()
+        lookalike.mkdir()
+        client = FakeClient(summaries=[{"Names": ["/cm-001"], "State": "exited"}])
+
+        result, output = self.run_clean(client, "y")
+
+        self.assertEqual(result, 0)
+        self.assertTrue(live.exists())
+        self.assertTrue(lookalike.exists())
+        self.assertIn("No orphaned workspaces found", output)
+
     def test_clean_aborts_without_removing_orphans_when_prompt_declines(self) -> None:
         self.cm.WORKSPACES_DIR.mkdir()
         orphan = self.cm.WORKSPACES_DIR / "cm.002"

@@ -363,5 +363,39 @@ class InspectTests(unittest.TestCase):
         self.assertIn("--logs must be 0 or greater", stdout.getvalue())
 
 
+class IdentityChecksTests(unittest.TestCase):
+    def setUp(self):
+        self.cm = load_cm()
+
+    def _container(self, env):
+        return types.SimpleNamespace(attrs={"Config": {"Env": env}})
+
+    @contextlib.contextmanager
+    def _host(self, uid, gid):
+        import unittest.mock as mock
+
+        with mock.patch.object(self.cm, "is_native_linux_host", lambda: True), \
+                mock.patch.object(self.cm.os, "getuid", lambda: uid), \
+                mock.patch.object(self.cm.os, "geteuid", lambda: uid), \
+                mock.patch.object(self.cm.os, "getgid", lambda: gid):
+            yield
+
+    def test_default_container_ok_when_uid_and_gid_match_defaults(self):
+        with self._host(uid=1000, gid=1000):
+            checks = self.cm._identity_checks(self._container([]), 1)
+        self.assertEqual(checks[0][0], "ok")
+
+    def test_default_container_warns_when_gid_differs(self):
+        # Host uid matches container default (1000) but gid differs: group
+        # ownership of new workspace files will not match the host (issue #38).
+        with self._host(uid=1000, gid=100):
+            checks = self.cm._identity_checks(self._container([]), 1)
+        status, message = checks[0]
+        self.assertEqual(status, "warn")
+        self.assertIn("group", message)
+        self.assertIn("1000", message)
+        self.assertIn("100", message)
+
+
 if __name__ == "__main__":
     unittest.main()

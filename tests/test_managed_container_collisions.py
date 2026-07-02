@@ -97,12 +97,15 @@ class ManagedContainerCollisionTests(unittest.TestCase):
         original_get_client = self.cm.get_client
         self.cm.get_client = lambda: client
         stdout = io.StringIO()
+        stderr = io.StringIO()
         try:
-            with contextlib.redirect_stdout(stdout):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
                 result = func(args)
         finally:
             self.cm.get_client = original_get_client
-        return result, stdout.getvalue()
+        # Unmanaged-collision and other failures may land on stderr while
+        # success messages land on stdout; callers assert on the combined text.
+        return result, stdout.getvalue() + stderr.getvalue()
 
     def unmanaged_error(self):
         return "Docker name 'cm-001' is occupied by an unmanaged container"

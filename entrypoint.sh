@@ -47,6 +47,12 @@ if [ -n "${CM_HOST_UID:-}" ] || [ -n "${CM_HOST_GID:-}" ]; then
     if [ -f /home/me/.bashrc ]; then
         chown me:"$(id -gn me)" /home/me/.bashrc
     fi
+    if [ -f /home/me/.profile ]; then
+        chown me:"$(id -gn me)" /home/me/.profile
+    fi
+    if [ -f /home/me/.bash_logout ]; then
+        chown me:"$(id -gn me)" /home/me/.bash_logout
+    fi
     if [ -d "$SSH_DIR" ]; then
         chown -R me:"$(id -gn me)" "$SSH_DIR"
     fi

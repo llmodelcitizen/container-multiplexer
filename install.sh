@@ -62,7 +62,21 @@ resolve_install_dir() {
         fi
     fi
     INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
-    INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+    # Only expand a bare leading "~" or "~/"; reject "~user" forms instead of
+    # silently mangling them into "${HOME}user/..." (issue #42).
+    case "$INSTALL_DIR" in
+        "~") INSTALL_DIR="$HOME" ;;
+        "~/"*) INSTALL_DIR="$HOME/${INSTALL_DIR#\~/}" ;;
+        "~"*)
+            echo "Error: '~user' home expansion is not supported. Use an absolute path or '~/...'." >&2
+            exit 1
+            ;;
+    esac
+    # Strip trailing slashes so the PATH-membership check and printed paths stay
+    # clean, but never reduce a lone "/" to empty (issue #43).
+    while [[ "$INSTALL_DIR" == */ && "$INSTALL_DIR" != "/" ]]; do
+        INSTALL_DIR="${INSTALL_DIR%/}"
+    done
 }
 
 # --- Uninstall mode ---
@@ -164,7 +178,11 @@ CM_WRAPPER="$INSTALL_DIR/cm"
 
 PYTHON="${CM_PYTHON:-python3}"
 if ! command -v "$PYTHON" >/dev/null 2>&1; then
-    echo "Error: $PYTHON not found. Install Python 3 or set CM_PYTHON=/path/to/python3."
+    echo "Error: $PYTHON not found. Install Python 3.9+ or set CM_PYTHON=/path/to/python3."
+    exit 1
+fi
+if ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    echo "Error: cm requires Python 3.9 or newer. Set CM_PYTHON=/path/to/python3.9+."
     exit 1
 fi
 
@@ -197,13 +215,18 @@ chmod +x "$CM_WRAPPER"
 if command -v git >/dev/null 2>&1 && git -C "$SCRIPT_DIR" rev-parse --git-dir >/dev/null 2>&1; then
     CM_VERSION=$(git -C "$SCRIPT_DIR" describe --tags --always --dirty 2>/dev/null)
     if [[ -n "$CM_VERSION" ]]; then
-        CM_VERSION_SAFE=$(printf '%s' "$CM_VERSION" | sed 's/[&/\]/\\&/g')
-        if [[ "$OSTYPE" == darwin* ]]; then
-            sed -i '' "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
-        else
-            sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
+        # Drop anything that isn't alnum/dot/underscore/plus/hyphen so the
+        # injected VERSION = "..." is always a valid Python string literal (and
+        # free of sed-replacement metacharacters), even for odd git tags.
+        CM_VERSION_SAFE=$(printf '%s' "$CM_VERSION" | tr -cd '[:alnum:]._+-')
+        if [[ -n "$CM_VERSION_SAFE" ]]; then
+            if [[ "$OSTYPE" == darwin* ]]; then
+                sed -i '' "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
+            else
+                sed -i "s/^VERSION = \"dev\"$/VERSION = \"$CM_VERSION_SAFE\"/" "$CM_SCRIPT"
+            fi
+            echo "Version: $CM_VERSION_SAFE"
         fi
-        echo "Version: $CM_VERSION"
     fi
 fi
 

@@ -234,6 +234,52 @@ class TmuxCommandTests(unittest.TestCase):
         self.assertNotIn(["setw", "-t", "cm-s1", "synchronize-panes", "on"], commands)
         self.assertEqual(exec_calls, [["switch-client", "-t", "=cm-s1"]])
 
+    def test_cmd_panes_kills_partial_session_when_a_split_fails(self) -> None:
+        commands = []
+
+        def fake_run_tmux(args, **kwargs):
+            commands.append(args)
+            if args[0] == "split-window":
+                raise SystemExit("Error: tmux command failed: split-window")
+            return types.SimpleNamespace(returncode=0)
+
+        with mock.patch.object(self.cm, "SCRIPT_DIR", Path("/tmp/cm path")), \
+                mock.patch.object(self.cm, "get_client", return_value=object()), \
+                mock.patch.object(self.cm, "parse_instances", return_value=[1, 2]), \
+                mock.patch.object(self.cm, "get_running_instances", return_value=[1, 2]), \
+                mock.patch.object(self.cm, "get_next_session_name", return_value=("cm-s1", False)), \
+                mock.patch.object(self.cm, "run_tmux", fake_run_tmux):
+            with self.assertRaises(SystemExit) as ctx:
+                self.cm.cmd_panes(
+                    types.SimpleNamespace(instances=["1", "2"], sync=False)
+                )
+
+        self.assertIn("cm-s1", str(ctx.exception))
+        self.assertIn(["kill-session", "-t", "=cm-s1"], commands)
+
+    def test_cmd_win_kills_partial_session_when_a_window_fails(self) -> None:
+        commands = []
+
+        def fake_run_tmux(args, **kwargs):
+            commands.append(args)
+            if args[0] == "new-window":
+                raise SystemExit("Error: tmux command failed: new-window")
+            return types.SimpleNamespace(returncode=0)
+
+        with mock.patch.object(self.cm, "SCRIPT_DIR", Path("/tmp/cm path")), \
+                mock.patch.object(self.cm, "get_client", return_value=object()), \
+                mock.patch.object(self.cm, "parse_instances", return_value=[1, 2]), \
+                mock.patch.object(self.cm, "get_running_instances", return_value=[1, 2]), \
+                mock.patch.object(self.cm, "get_next_session_name", return_value=("cm-s1", False)), \
+                mock.patch.object(self.cm, "run_tmux", fake_run_tmux):
+            with self.assertRaises(SystemExit) as ctx:
+                self.cm.cmd_win(
+                    types.SimpleNamespace(instances=["1", "2"], sync=False)
+                )
+
+        self.assertIn("cm-s1", str(ctx.exception))
+        self.assertIn(["kill-session", "-t", "=cm-s1"], commands)
+
 
 if __name__ == "__main__":
     unittest.main()

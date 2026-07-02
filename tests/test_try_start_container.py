@@ -134,6 +134,23 @@ class TryStartContainerTests(unittest.TestCase):
             {"bind": "/home/me/workspace", "mode": "rw"},
         )
 
+    def test_run_kwargs_do_not_set_a_resurrecting_restart_policy(self) -> None:
+        client = FakeClient()
+
+        port, error = self.run_try_start(client)
+
+        self.assertEqual((port, error), (2201, None))
+        _image, kwargs = client.containers.run_calls[0]
+        # Instances must not auto-restart on host boot (issue #55). Either no
+        # restart policy at all (Docker default "no"), or an explicitly
+        # non-resurrecting one.
+        policy = kwargs.get("restart_policy")
+        self.assertIn(
+            policy,
+            (None, {}, {"Name": ""}, {"Name": "no"}),
+            f"unexpected restart_policy: {policy!r}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import tempfile
 import types
 import unittest
 from unittest import mock
@@ -45,6 +46,27 @@ class LogCommandTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output, "before\n\n")
+
+    def test_cmd_logs_handles_broken_pipe_during_follow(self) -> None:
+        def broken_stream(**kwargs):
+            yield b"before\n"
+            raise BrokenPipeError
+
+        container = FakeContainer("cm-001", logs_output=broken_stream)
+        client = FakeClient({"cm-001": container})
+        original_get_client = self.cm.get_client
+        self.cm.get_client = lambda: client
+        try:
+            with tempfile.TemporaryFile("w+") as tmp, \
+                    contextlib.redirect_stdout(tmp), \
+                    mock.patch.object(self.cm.os, "dup2") as dup2, \
+                    mock.patch.object(self.cm.os, "open", return_value=99):
+                result = self.cm.cmd_logs(types.SimpleNamespace(instance=1))
+        finally:
+            self.cm.get_client = original_get_client
+
+        self.assertEqual(result, 141)
+        dup2.assert_called_once()
 
     def test_cmd_logs_reports_missing_container(self) -> None:
         stdout = io.StringIO()

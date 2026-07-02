@@ -109,6 +109,47 @@ class PortLookupTests(unittest.TestCase):
             ("-", "-"),
         )
 
+    def test_parse_status_normalizes_sub_second_uptime(self):
+        # Docker's 18-char "Less than a second" overflows the 16-char Uptime
+        # column; it is normalized to a shorter value that fits.
+        self.assertEqual(
+            self.cm.parse_status("Up Less than a second"),
+            ("<1 second", "-"),
+        )
+        self.assertEqual(
+            self.cm.parse_status("Up Less than a second (health: starting)"),
+            ("<1 second", "starting"),
+        )
+        self.assertLessEqual(len("<1 second"), 16)
+
+    def test_cmd_list_row_aligns_for_sub_second_uptime(self):
+        client = FakeClient(
+            summaries=[
+                {
+                    "Names": ["/cm-001"],
+                    "State": "running",
+                    "Status": "Up Less than a second",
+                    "ImageID": "sha256:aaaaaaaaaaaaaaaa",
+                    "Ports": [
+                        {"PrivatePort": 22, "PublicPort": 2301, "Type": "tcp"}
+                    ],
+                }
+            ]
+        )
+
+        result, output = self.run_cmd_list(client)
+
+        self.assertEqual(result, 0)
+        self.assertIn("<1 second", output)
+        self.assertNotIn("Less than a second", output)
+
+        lines = output.splitlines()
+        header = lines[0]
+        row = next(line for line in lines if line.startswith("1 "))
+        # The overflowing value would shift every column after Uptime; once it
+        # fits, the final SSH column starts at the same offset as its header.
+        self.assertEqual(row.index("cm ssh 1"), header.index("SSH"))
+
     def test_summary_port_uses_actual_public_port(self):
         summary = {
             "Ports": [

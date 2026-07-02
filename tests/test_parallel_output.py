@@ -32,14 +32,18 @@ class ParallelOutputTests(unittest.TestCase):
             raise RuntimeError("boom")
 
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = cm.run_parallel(worker, [1, 2, 3])
 
-        output = stdout.getvalue()
+        out = stdout.getvalue()
+        err = stderr.getvalue()
         self.assertFalse(result)
-        self.assertLess(output.index("started instance 2"), output.index("Errors:"))
-        self.assertLess(output.index("Errors:"), output.index("failed instance 1"))
-        self.assertLess(output.index("Errors:"), output.index("Instance 3: unexpected error: boom"))
+        # Successes stay on stdout; the "Errors:" block goes to stderr.
+        self.assertIn("started instance 2", out)
+        self.assertNotIn("Errors:", out)
+        self.assertLess(err.index("Errors:"), err.index("failed instance 1"))
+        self.assertLess(err.index("Errors:"), err.index("Instance 3: unexpected error: boom"))
 
     def test_run_parallel_reports_system_exit_without_discarding_results(self):
         cm = load_cm()
@@ -50,16 +54,18 @@ class ParallelOutputTests(unittest.TestCase):
             raise SystemExit("authorized_keys missing")
 
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             result = cm.run_parallel(worker, [1, 2])
 
-        output = stdout.getvalue()
+        out = stdout.getvalue()
+        err = stderr.getvalue()
         self.assertFalse(result)
-        self.assertIn("started instance 1", output)
-        self.assertIn("Errors:", output)
+        self.assertIn("started instance 1", out)
+        self.assertIn("Errors:", err)
         self.assertIn(
             "Instance 2: unexpected exit: authorized_keys missing",
-            output,
+            err,
         )
 
     def test_run_parallel_prints_collected_results_on_keyboard_interrupt(self):

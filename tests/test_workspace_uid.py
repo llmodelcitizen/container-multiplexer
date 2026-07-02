@@ -113,6 +113,21 @@ class WorkspaceUidTests(unittest.TestCase):
 
             self.assertFalse(workspace.exists())
 
+    def test_linux_primary_group_root_is_rejected_before_creating_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            workspace = Path(temp_dir) / "cm.001"
+            with self.host_identity("linux", uid=1000, gid=0):
+                with self.assertRaises(self.cm.WorkspacePreflightError) as ctx:
+                    self.cm.prepare_workspace(workspace)
+
+            self.assertIn("GID 0", str(ctx.exception))
+            self.assertFalse(workspace.exists())
+
+    def test_get_linux_host_identity_rejects_primary_group_root(self) -> None:
+        with self.host_identity("linux", uid=1000, gid=0):
+            with self.assertRaises(self.cm.WorkspacePreflightError):
+                self.cm.get_linux_host_identity()
+
     def test_linux_workspace_preflight_creates_and_probes_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir) / "cm.001"
@@ -154,6 +169,15 @@ class WorkspaceUidTests(unittest.TestCase):
         container = types.SimpleNamespace(attrs={"Config": {"Env": []}})
 
         with self.host_identity("linux", uid=1000, gid=1000):
+            self.assertIsNone(self.cm.get_existing_container_identity_error(container, 1))
+
+    def test_existing_default_container_gid_mismatch_does_not_block_start(self) -> None:
+        # Host uid matches the container default but primary gid differs: only
+        # group ownership of new workspace files is affected, so start is not
+        # blocked (issue #38 -- warn, not a hard error).
+        container = types.SimpleNamespace(attrs={"Config": {"Env": []}})
+
+        with self.host_identity("linux", uid=1000, gid=100):
             self.assertIsNone(self.cm.get_existing_container_identity_error(container, 1))
 
 

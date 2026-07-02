@@ -65,6 +65,7 @@ MANAGED_LABEL = "cm.managed"
 MANAGED_LABEL_VALUE = "true"
 MANAGED_CONTAINER_RE = re.compile(r"^cm-(\d{3})$")
 UPDATE_BACKUP_CONTAINER_RE = re.compile(r"^cm-update-backup-(\d{3})-.+")
+WORKSPACE_DIR_RE = re.compile(r"^cm\.([0-9]{3})\Z")
 STOPPABLE_CONTAINER_STATUSES = {"running", "restarting", "paused"}
 FORCE_REMOVABLE_CONTAINER_STATUSES = {"restarting", "paused"}
 
@@ -445,6 +446,14 @@ def get_linux_host_identity() -> tuple[int, int] | None:
             "Running as root can create root-owned workspaces that user me cannot write.\n"
             "Run cm as your normal user after granting Docker access to that user."
         )
+    if gid == 0:
+        raise WorkspacePreflightError(
+            "Error: your primary group is root (GID 0), which cm cannot mirror into "
+            "the container.\n"
+            "The container rejects GID 0 for user me, so the instance would fail to "
+            "start.\n"
+            "Run cm as a user whose primary group is a normal (non-root) group."
+        )
 
     return (uid, gid)
 
@@ -524,6 +533,10 @@ def get_existing_container_identity_error(container, n: int) -> str | None:
     if container_uid == str(uid) and container_gid == str(gid):
         return None
     if container_uid is None and container_gid is None and uid == CONTAINER_DEFAULT_UID:
+        # Default container (no CM_HOST_* env). A matching uid means the host user
+        # owns workspace files. A differing gid (gid != CONTAINER_DEFAULT_GID) only
+        # affects group ownership of new files, which 'cm inspect' reports as a
+        # warning (see _identity_checks); it is not a hard error that blocks start.
         return None
 
     configured = (
@@ -698,6 +711,25 @@ def validate_instance_number(n: int) -> None:
         sys.exit(f"Instance {n} must be positive")
     if n > MAX_INSTANCE:
         sys.exit(f"Instance {n} exceeds maximum ({MAX_INSTANCE})")
+
+
+def _instance_arg(value: str) -> int:
+    """argparse ``type=`` validator for a single instance positional.
+
+    Enforces the same 1..MAX_INSTANCE range as ``parse_instances`` so that
+    ssh/logs/inspect reject out-of-range numbers up front instead of building
+    nonsense container names (e.g. ``cm--01``) or emitting misleading
+    "does not exist" messages for impossible instance numbers.
+    """
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(f"invalid instance number: {value!r}")
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"Instance {n} must be positive")
+    if n > MAX_INSTANCE:
+        raise argparse.ArgumentTypeError(f"Instance {n} exceeds maximum ({MAX_INSTANCE})")
+    return n
 
 
 def parse_instances(args: list[str]) -> list[int]:
@@ -875,7 +907,6 @@ def try_start_container(
                         "mode": "rw",
                     },
                 },
-                "restart_policy": {"Name": "unless-stopped"},
                 "labels": {MANAGED_LABEL: MANAGED_LABEL_VALUE},
             }
             if environment:
@@ -917,7 +948,7 @@ def start_instance(client: docker.DockerClient, n: int) -> bool:
     try:
         container = get_managed_container(client, cfg["container"])
     except UnmanagedContainerNameError as e:
-        print(e)
+        print(e, file=sys.stderr)
         return False
 
     if container:
@@ -980,7 +1011,7 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
     try:
         container = get_managed_container(client, cfg["container"])
     except UnmanagedContainerNameError as e:
-        print(e)
+        print(e, file=sys.stderr)
         return False
     if not container:
         print(f"Instance {n} does not exist")
@@ -1004,6 +1035,7 @@ def stop_instance(client: docker.DockerClient, n: int) -> bool:
 def restart_instance(client: docker.DockerClient, n: int) -> bool:
     """Restart a single instance. Returns True on success."""
     cfg = get_instance_config(n)
+    docker_sdk = get_docker_sdk()
     try:
         prepare_workspace(cfg["workspace"])
     except WorkspacePreflightError as e:
@@ -1013,8 +1045,9 @@ def restart_instance(client: docker.DockerClient, n: int) -> bool:
     try:
         container = get_managed_container(client, cfg["container"])
     except UnmanagedContainerNameError as e:
-        print(e)
+        print(e, file=sys.stderr)
         return False
+
     if container:
         identity_error = get_existing_container_identity_error(container, n)
         if identity_error:
@@ -1025,14 +1058,30 @@ def restart_instance(client: docker.DockerClient, n: int) -> bool:
         except AuthorizedKeysError as e:
             print(e, file=sys.stderr)
             return False
-    if container and get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
-        docker_sdk = get_docker_sdk()
+        if get_container_status(container) in STOPPABLE_CONTAINER_STATUSES:
+            try:
+                container.stop()
+            except docker_sdk.errors.APIError as e:
+                print(f"Failed to restart instance {n}: {e}")
+                return False
+        # Start the existing container directly so the message reads
+        # "Restarted ..." (matching the parallel _restart_instance_worker),
+        # rather than delegating to start_instance which prints "Started ...".
         try:
-            container.stop()
+            container.start()
         except docker_sdk.errors.APIError as e:
             print(f"Failed to restart instance {n}: {e}")
+            if is_port_allocation_error(e):
+                print(
+                    "Hint: remove and recreate the stopped container to retry "
+                    f"port assignment: cm rm {n}; cm start {n}"
+                )
             return False
+        print(f"Restarted instance {n} (existing container)")
+        return True
 
+    # No existing container: fall back to start_instance's create-and-start
+    # path (which prints its own "Started instance N (port ...)" line).
     return start_instance(client, n)
 
 
@@ -1043,7 +1092,7 @@ def rm_instance(client: docker.DockerClient, n: int) -> bool:
     try:
         container = get_managed_container(client, cfg["container"])
     except UnmanagedContainerNameError as e:
-        print(e)
+        print(e, file=sys.stderr)
         return False
     if not container:
         print(f"Instance {n} does not exist")
@@ -1526,12 +1575,15 @@ def run_parallel(worker_func, instances: list[int]) -> bool:
             print(message)
 
     if failure_messages:
+        # Failures go to stderr so the single-instance and parallel paths route
+        # errors to the same stream (single paths print preflight/unmanaged
+        # failures to stderr too).
         if success_messages:
-            print()
-        print("Errors:")
+            print(file=sys.stderr)
+        print("Errors:", file=sys.stderr)
         for message in failure_messages:
             if message:
-                print(message)
+                print(message, file=sys.stderr)
 
     if interrupted:
         if success_messages or failure_messages:
@@ -1737,6 +1789,7 @@ def cmd_stop(args: argparse.Namespace) -> int:
 
 def cmd_rm(args: argparse.Namespace) -> int:
     """Remove dead (non-running) containers."""
+    client = None
     if args.instances == ["all"]:
         client = get_client()
         instances = get_dead_instances(client)
@@ -1753,11 +1806,27 @@ def cmd_rm(args: argparse.Namespace) -> int:
     if len(instances) > 1:
         success = run_parallel(_rm_instance_worker, instances)
     else:
-        client = get_client()
+        if client is None:
+            client = get_client()
         success = rm_instance(client, instances[0])
 
-    remaining = [get_instance_config(n)["workspace"] for n in instances
-                 if get_instance_config(n)["workspace"].exists()]
+    # Only note workspaces that 'cm clean' could actually remove: those whose
+    # container was removed (or never existed), leaving the workspace orphaned.
+    # A running, failed-to-remove, or unmanaged instance still has a container,
+    # so its workspace is not deletable cruft and the note would be misleading.
+    remaining = []
+    for n in instances:
+        cfg = get_instance_config(n)
+        if not cfg["workspace"].exists():
+            continue
+        if client is None:
+            client = get_client()
+        try:
+            container = get_managed_container(client, cfg["container"])
+        except UnmanagedContainerNameError:
+            continue
+        if container is None:
+            remaining.append(cfg["workspace"])
     if remaining:
         dirs = "\n  ".join(str(d) for d in remaining)
         print(f"Note: workspace(s) remain on disk (use 'cm clean' to remove):\n  {dirs}")
@@ -1785,11 +1854,10 @@ def cmd_clean(args: argparse.Namespace) -> int:
 
     orphans = []
     for d in sorted(WORKSPACES_DIR.iterdir()):
-        if not d.is_dir() or not d.name.startswith("cm."):
+        if not d.is_dir():
             continue
-        try:
-            int(d.name.split(".")[1])
-        except (IndexError, ValueError):
+        match = WORKSPACE_DIR_RE.match(d.name)
+        if match is None or not 1 <= int(match.group(1)) <= MAX_INSTANCE:
             continue
         if _workspace_path(d) not in referenced_workspaces:
             orphans.append(d)
@@ -1892,6 +1960,12 @@ def parse_status(status_str: str) -> tuple[str, str]:
         uptime = rest
         health = "-"
 
+    # Docker reports "Up Less than a second" for freshly started containers;
+    # the 18-char phrase overflows the Uptime column in cmd_list and shifts
+    # every later column for that row. Normalize it to a value that fits.
+    if uptime == "Less than a second":
+        uptime = "<1 second"
+
     return (uptime, health)
 
 
@@ -1972,12 +2046,11 @@ def cmd_complete(args: argparse.Namespace) -> int:
             instances = []
             if WORKSPACES_DIR.is_dir():
                 for d in WORKSPACES_DIR.iterdir():
-                    if d.is_dir() and d.name.startswith("cm."):
-                        try:
-                            n = int(d.name.split(".")[1])
-                            instances.append(n)
-                        except (IndexError, ValueError):
-                            pass
+                    if not d.is_dir():
+                        continue
+                    match = WORKSPACE_DIR_RE.match(d.name)
+                    if match and 1 <= int(match.group(1)) <= MAX_INSTANCE:
+                        instances.append(int(match.group(1)))
             print(" ".join(str(n) for n in sorted(instances)))
 
     elif mode == "running":
@@ -2293,8 +2366,19 @@ def _identity_checks(container, n: int) -> list[tuple[str, str]]:
 
     if container_uid == str(uid) and container_gid == str(gid):
         checks.append(("ok", f"container UID/GID matches current host {uid}:{gid}"))
-    elif container_uid is None and container_gid is None and uid == CONTAINER_DEFAULT_UID:
+    elif (
+        container_uid is None
+        and container_gid is None
+        and uid == CONTAINER_DEFAULT_UID
+        and gid == CONTAINER_DEFAULT_GID
+    ):
         checks.append(("ok", f"container default UID/GID is compatible with host {uid}:{gid}"))
+    elif container_uid is None and container_gid is None and uid == CONTAINER_DEFAULT_UID:
+        checks.append((
+            "warn",
+            f"container default UID {uid} matches host, but files written in the "
+            f"workspace will have group {CONTAINER_DEFAULT_GID}, not host gid {gid}",
+        ))
     else:
         checks.append((
             "warn",
@@ -2589,8 +2673,27 @@ def cmd_logs(args: argparse.Namespace) -> int:
         print(decoder.decode(b"", final=True), end="")
     except KeyboardInterrupt:
         print()
+    except BrokenPipeError:
+        return _exit_broken_pipe()
 
     return 0
+
+
+def _kill_partial_session_and_exit(session_name: str) -> None:
+    """Tear down a half-built tmux session, then exit with a clear error.
+
+    Building a `cm pan`/`cm win` session issues many tmux commands after the
+    detached session already exists, each of which sys.exits on failure. If one
+    fails mid-build the session is left running detached with live SSH panes, so
+    kill it rather than stranding an orphaned session the user is never told
+    about.
+    """
+    run_tmux(["kill-session", "-t", tmux_exact_target(session_name)],
+             capture_output=True)
+    sys.exit(
+        f"Error: failed to build tmux session '{session_name}'; "
+        "killed the partial session."
+    )
 
 
 def cmd_panes(args: argparse.Namespace) -> int:
@@ -2616,27 +2719,30 @@ def cmd_panes(args: argparse.Namespace) -> int:
     if existed:
         print(f"Warning: Existing session found, creating '{session_name}'")
 
-    # Create new session with first instance
-    first = instances[0]
-    pane_cmd = tmux_ssh_pane_command(first)
-    run_tmux(["new-session", "-d", "-s", session_name, "-n", session_name,
-                    pane_cmd], check=True)
-    run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
-    run_tmux(["set-option", "-t", session_name, "set-titles", "on"], check=True)
-    run_tmux(["set-option", "-t", session_name, "set-titles-string", session_name], check=True)
-    run_tmux(["setw", "-t", session_name, "automatic-rename", "off"], check=True)
+    try:
+        # Create new session with first instance
+        first = instances[0]
+        pane_cmd = tmux_ssh_pane_command(first)
+        run_tmux(["new-session", "-d", "-s", session_name, "-n", session_name,
+                        pane_cmd], check=True)
+        run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
+        run_tmux(["set-option", "-t", session_name, "set-titles", "on"], check=True)
+        run_tmux(["set-option", "-t", session_name, "set-titles-string", session_name], check=True)
+        run_tmux(["setw", "-t", session_name, "automatic-rename", "off"], check=True)
 
-    # Split panes for remaining instances
-    for n in instances[1:]:
-        pane_cmd = tmux_ssh_pane_command(n)
-        run_tmux(["split-window", "-t", session_name, pane_cmd], check=True)
-        # Rebalance layout after each split to prevent "no space for new pane"
-        run_tmux(["select-layout", "-t", session_name, "tiled"],
-                       check=True)
+        # Split panes for remaining instances
+        for n in instances[1:]:
+            pane_cmd = tmux_ssh_pane_command(n)
+            run_tmux(["split-window", "-t", session_name, pane_cmd], check=True)
+            # Rebalance layout after each split to prevent "no space for new pane"
+            run_tmux(["select-layout", "-t", session_name, "tiled"],
+                           check=True)
 
-    # Enable synchronized panes if requested
-    if args.sync:
-        set_session_synchronize_panes(session_name, "on")
+        # Enable synchronized panes if requested
+        if args.sync:
+            set_session_synchronize_panes(session_name, "on")
+    except SystemExit:
+        _kill_partial_session_and_exit(session_name)
 
     # Switch or attach to session (replaces current process)
     if os.environ.get("TMUX"):
@@ -2668,23 +2774,26 @@ def cmd_win(args: argparse.Namespace) -> int:
     if existed:
         print(f"Warning: Existing session found, creating '{session_name}'")
 
-    # Create new session with first window
-    first = instances[0]
-    window_name = f"{session_name}-w{first}"
-    pane_cmd = tmux_ssh_pane_command(first)
-    run_tmux(["new-session", "-d", "-s", session_name,
-                    "-n", window_name, pane_cmd], check=True)
-    run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
-    run_tmux(["set-option", "-t", session_name, "set-titles", "on"], check=True)
-    run_tmux(["set-option", "-t", session_name, "set-titles-string", session_name], check=True)
-    run_tmux(["setw", "-t", session_name, "automatic-rename", "off"], check=True)
-
-    # Create additional windows
-    for n in instances[1:]:
-        window_name = f"{session_name}-w{n}"
-        pane_cmd = tmux_ssh_pane_command(n)
-        run_tmux(["new-window", "-t", f"{session_name}:",
+    try:
+        # Create new session with first window
+        first = instances[0]
+        window_name = f"{session_name}-w{first}"
+        pane_cmd = tmux_ssh_pane_command(first)
+        run_tmux(["new-session", "-d", "-s", session_name,
                         "-n", window_name, pane_cmd], check=True)
+        run_tmux(["set-option", "-t", session_name, "detach-on-destroy", "off"], check=True)
+        run_tmux(["set-option", "-t", session_name, "set-titles", "on"], check=True)
+        run_tmux(["set-option", "-t", session_name, "set-titles-string", session_name], check=True)
+        run_tmux(["setw", "-t", session_name, "automatic-rename", "off"], check=True)
+
+        # Create additional windows
+        for n in instances[1:]:
+            window_name = f"{session_name}-w{n}"
+            pane_cmd = tmux_ssh_pane_command(n)
+            run_tmux(["new-window", "-t", f"{session_name}:",
+                            "-n", window_name, pane_cmd], check=True)
+    except SystemExit:
+        _kill_partial_session_and_exit(session_name)
 
     # Enable synchronized panes if requested
     if args.sync:
@@ -2816,24 +2925,46 @@ _cm_completions() {
         done
     }
 
+    # Helper: return 0 if a word already appears on the command line
+    _cm_is_used() {
+        local target="$1" i w
+        for ((i = 1; i < cword; i++)); do
+            w="${words[i]}"
+            [[ "$w" == "$target" ]] && return 0
+        done
+        return 1
+    }
+
     # Helper: show formatted table and return numbers
     _cm_complete_instances() {
         local mode="$1"
         local instances
         instances=$(cm _complete "$mode" 2>/dev/null)
-        if [[ -z "$cur" && -n "$instances" ]]; then
-            echo >/dev/tty
-            cm _complete "$mode" --table 2>/dev/null >/dev/tty
-            printf '\n%s ' "${words[*]}" >/dev/tty
+        # Show a formatted table on the terminal, but only when /dev/tty is
+        # writable. In tty-less completion contexts (some IDE/comint shells,
+        # scripted completion) writing to /dev/tty fails and bash would spew the
+        # redirection error into the completion buffer on every TAB.
+        if [[ -z "$cur" && -n "$instances" ]] && { : >/dev/tty; } 2>/dev/null; then
+            {
+                echo
+                cm _complete "$mode" --table 2>/dev/null
+                printf '\n%s ' "${words[*]}"
+            } >/dev/tty
         fi
         echo "$instances"
     }
 
     case "$cmd" in
-        ssh|logs)
-            # Single instance number (running only)
+        ssh)
+            # Single instance number (running only; ssh needs a live container)
             local instances
             instances=$(_cm_complete_instances running)
+            COMPREPLY=($(compgen -W "$instances" -- "$cur"))
+            ;;
+        logs)
+            # Single instance number, any state (logs works on exited containers)
+            local instances
+            instances=$(_cm_complete_instances instances)
             COMPREPLY=($(compgen -W "$instances" -- "$cur"))
             ;;
         inspect)
@@ -2891,20 +3022,34 @@ _cm_completions() {
             COMPREPLY=($(compgen -W "all $(_filter_used $instances)" -- "$cur"))
             ;;
         kill)
-            # Tmux session names (no duplicates)
-            local sessions
-            sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E '^cm(-|$)')
-            COMPREPLY=($(compgen -W "$(_filter_used $sessions)" -- "$cur"))
+            # Tmux session names (no duplicates). Build COMPREPLY by hand: a
+            # session name must never reach `compgen -W`, which re-expands each
+            # word and would run command substitution embedded in a name.
+            local name
+            COMPREPLY=()
+            while IFS= read -r name; do
+                [[ -n "$name" ]] || continue
+                [[ "$name" == "$cur"* ]] || continue
+                _cm_is_used "$name" && continue
+                COMPREPLY+=("$name")
+            done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E '^cm(-|$)')
             ;;
         sync)
             if [[ $cword -eq 2 ]]; then
                 # First arg: on or off
                 COMPREPLY=($(compgen -W "on off" -- "$cur"))
             else
-                # Subsequent args: tmux session names (no duplicates)
-                local sessions
-                sessions=$(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E '^cm(-|$)')
-                COMPREPLY=($(compgen -W "$(_filter_used $sessions)" -- "$cur"))
+                # Subsequent args: tmux session names (no duplicates). Built by
+                # hand for the same reason as `kill`: never feed session names
+                # to `compgen -W`, which would expand command substitution.
+                local name
+                COMPREPLY=()
+                while IFS= read -r name; do
+                    [[ -n "$name" ]] || continue
+                    [[ "$name" == "$cur"* ]] || continue
+                    _cm_is_used "$name" && continue
+                    COMPREPLY+=("$name")
+                done < <(tmux list-sessions -F "#{session_name}" 2>/dev/null | grep -E '^cm(-|$)')
             fi
             ;;
     esac
@@ -2916,7 +3061,27 @@ complete -F _cm_completions cm
     return 0
 
 
+def _exit_broken_pipe() -> int:
+    """Handle a closed output pipe (e.g. `cm logs N | head`).
+
+    Follows the Python docs' recommendation: redirect stdout to /dev/null so the
+    interpreter's shutdown flush cannot re-raise BrokenPipeError, then report the
+    conventional 128 + SIGPIPE(13) = 141 exit status.
+    """
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    os.dup2(devnull, sys.stdout.fileno())
+    return 141
+
+
 def main() -> int:
+    if sys.version_info < (3, 9):
+        print(
+            "cm requires Python 3.9 or newer "
+            f"(running {sys.version_info.major}.{sys.version_info.minor}).",
+            file=sys.stderr,
+        )
+        return 1
+
     # Handle internal completion command before argparse (hidden from help)
     if len(sys.argv) >= 2 and sys.argv[1] == "_complete":
         mode = sys.argv[2] if len(sys.argv) > 2 else "instances"
@@ -2979,7 +3144,7 @@ def main() -> int:
     p_ssh = subparsers.add_parser("ssh", help="SSH into an instance")
     p_ssh.add_argument("-i", "--identity", metavar="PATH",
                        help="SSH private key to use (default: ~/.ssh/cm_ed25519)")
-    p_ssh.add_argument("instance", type=int, metavar="N",
+    p_ssh.add_argument("instance", type=_instance_arg, metavar="N",
                        help="Instance number")
     p_ssh.set_defaults(func=cmd_ssh)
 
@@ -2989,7 +3154,7 @@ def main() -> int:
 
     # logs
     p_logs = subparsers.add_parser("logs", help="Show logs for an instance")
-    p_logs.add_argument("instance", type=int, metavar="N",
+    p_logs.add_argument("instance", type=_instance_arg, metavar="N",
                         help="Instance number")
     p_logs.set_defaults(func=cmd_logs)
 
@@ -3001,7 +3166,7 @@ def main() -> int:
                            help="Show mounts, port bindings, env subset, and health history")
     p_inspect.add_argument("--logs", type=int, default=0, metavar="LINES",
                            help="Recent Docker log lines to show (default: 0)")
-    p_inspect.add_argument("instance", type=int, metavar="N",
+    p_inspect.add_argument("instance", type=_instance_arg, metavar="N",
                            help="Instance number")
     p_inspect.set_defaults(func=cmd_inspect)
 
@@ -3049,6 +3214,8 @@ def main() -> int:
     except KeyboardInterrupt:
         print("Interrupted", file=sys.stderr)
         return 130
+    except BrokenPipeError:
+        return _exit_broken_pipe()
 
 
 if __name__ == "__main__":
