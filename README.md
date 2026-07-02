@@ -28,6 +28,8 @@ Verify Docker is installed and running:
 docker info
 ```
 
+If `docker info` works through a Docker CLI context but `cm` cannot connect, set `DOCKER_HOST` to that context's Docker endpoint, for example `unix://$HOME/.colima/default/docker.sock`.
+
 Install `tmux` and Python 3:
 
 ```bash

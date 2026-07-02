@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import json
 import re
 import shlex
 import socket
@@ -125,6 +126,55 @@ def get_docker_sdk() -> Any:
     return _docker_sdk
 
 
+def get_docker_cli_context_host() -> str | None:
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "context",
+                "inspect",
+                "--format",
+                "{{json .Endpoints.docker.Host}}",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    output = result.stdout.strip()
+    if not output:
+        return None
+    try:
+        host = json.loads(output)
+    except json.JSONDecodeError:
+        host = output
+    if isinstance(host, str) and host:
+        return host
+    return None
+
+
+def docker_connect_error_message(
+    error: Exception,
+    *,
+    context_host: str | None = None,
+    context_error: Exception | None = None,
+) -> str:
+    lines = [
+        "Error: Cannot connect to Docker with the Python Docker SDK.",
+        "If 'docker info' works via a Docker CLI context, set DOCKER_HOST to that "
+        "context's Docker endpoint or enable the default Docker socket.",
+        "Example for Colima: export DOCKER_HOST=unix://$HOME/.colima/default/docker.sock",
+        f"Original error: {error}",
+    ]
+    if context_host and context_error:
+        lines.append(f"Tried Docker CLI context endpoint {context_host}: {context_error}")
+    return "\n".join(lines)
+
+
 def run_tmux(args: list[str], **kwargs) -> subprocess.CompletedProcess:
     """Run a tmux command, printing it to stderr first."""
     cmd = ["tmux"] + args
@@ -223,8 +273,29 @@ def get_client() -> docker.DockerClient:
     docker_sdk = get_docker_sdk()
     try:
         return docker_sdk.from_env()
-    except docker_sdk.errors.DockerException:
-        sys.exit("Error: Cannot connect to Docker. Is the Docker daemon running?")
+    except docker_sdk.errors.DockerException as env_error:
+        if not os.environ.get("DOCKER_HOST"):
+            context_host = get_docker_cli_context_host()
+            if context_host:
+                client = None
+                try:
+                    client = docker_sdk.DockerClient(base_url=context_host)
+                    client.ping()
+                    return client
+                except docker_sdk.errors.DockerException as context_error:
+                    if client is not None:
+                        try:
+                            client.close()
+                        except Exception:
+                            pass
+                    sys.exit(
+                        docker_connect_error_message(
+                            env_error,
+                            context_host=context_host,
+                            context_error=context_error,
+                        )
+                    )
+        sys.exit(docker_connect_error_message(env_error))
 
 
 def get_instance_config(n: int) -> dict:
