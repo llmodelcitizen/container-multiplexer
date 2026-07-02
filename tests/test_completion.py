@@ -137,6 +137,64 @@ class CompletionTests(unittest.TestCase):
         self.assertEqual(syntax.returncode, 0, syntax.stderr)
         self.assertIn("complete -F _cm_completions cm", script)
 
+    def run_bash_completion_harness(self, harness: str) -> list[str]:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.cm.cmd_autocomplete(types.SimpleNamespace())
+        with tempfile.NamedTemporaryFile("w", suffix=".bash") as temp:
+            temp.write(stdout.getvalue())
+            temp.flush()
+            result = subprocess.run(
+                ["bash", "-c", harness, "bash", temp.name],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.splitlines()
+
+    def test_autocomplete_keeps_current_word_when_filtering_used_instances(self) -> None:
+        completions = self.run_bash_completion_harness(
+            r'''
+source "$1"
+_init_completion() {
+    words=(cm stop 1)
+    cword=2
+    cur=1
+    prev=stop
+}
+cm() {
+    if [[ "$1" == "_complete" ]]; then
+        printf '1 10\n'
+    fi
+}
+_cm_completions
+printf '%s\n' "${COMPREPLY[@]}"
+'''
+        )
+
+        self.assertEqual(completions, ["1", "10"])
+
+    def test_autocomplete_keeps_cm_session_name_when_filtering_used_sessions(self) -> None:
+        completions = self.run_bash_completion_harness(
+            r'''
+source "$1"
+_init_completion() {
+    words=(cm kill "")
+    cword=2
+    cur=""
+    prev=kill
+}
+tmux() {
+    printf 'cm\ncm-1\n'
+}
+_cm_completions
+printf '%s\n' "${COMPREPLY[@]}"
+'''
+        )
+
+        self.assertEqual(completions, ["cm", "cm-1"])
+
     def test_completion_commands_are_accepted_subcommands(self) -> None:
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):

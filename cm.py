@@ -2617,8 +2617,9 @@ _cm_completions() {
         local item
         for item; do
             local used=0
-            local w
-            for w in "${words[@]}"; do
+            local i w
+            for ((i = 1; i < cword; i++)); do
+                w="${words[i]}"
                 [[ "$w" == "$item" ]] && { used=1; break; }
             done
             [[ $used -eq 0 ]] && echo "$item"
