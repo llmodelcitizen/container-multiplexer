@@ -25,6 +25,13 @@ class RuntimeImageTests(unittest.TestCase):
         self.assertIn("exec /usr/sbin/sshd -D -e", entrypoint)
         self.assertNotIn("tail -f /dev/null", entrypoint)
 
+    def test_entrypoint_installs_path_profile_without_mutating_bashrc(self):
+        entrypoint = (ROOT / "entrypoint.sh").read_text()
+
+        self.assertIn("cat > /etc/profile.d/cm-path.sh", entrypoint)
+        self.assertIn('export PATH="$HOME/.local/bin:$PATH"', entrypoint)
+        self.assertNotIn(">> /home/me/.bashrc", entrypoint)
+
     def test_dockerfile_has_ssh_healthcheck(self):
         dockerfile = (ROOT / "Dockerfile").read_text()
 

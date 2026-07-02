@@ -5,8 +5,11 @@ echo "===================================="
 echo "CM Container Starting"
 echo "===================================="
 
-# Add local binaries to PATH for SSH sessions
-echo 'export PATH="$HOME/.local/bin:$PATH"' >> /home/me/.bashrc
+# Add local binaries to PATH for login/interactive shells without mutating dotfiles.
+cat > /etc/profile.d/cm-path.sh <<'EOF'
+export PATH="$HOME/.local/bin:$PATH"
+EOF
+chmod 644 /etc/profile.d/cm-path.sh
 
 AUTHORIZED_KEYS_SRC="/tmp/cm_authorized_keys"
 AUTHORIZED_KEYS_DST="/home/me/.ssh/authorized_keys"
