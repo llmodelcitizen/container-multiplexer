@@ -10,6 +10,11 @@ from typing import Any, Callable
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def write_executable(path: Path, text: str) -> None:
+    path.write_text(text, encoding="utf-8")
+    path.chmod(0o755)
+
+
 class FakeNotFound(Exception):
     pass
 

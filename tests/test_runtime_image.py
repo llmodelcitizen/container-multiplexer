@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import shlex
 import stat
 import subprocess
@@ -9,8 +8,11 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from tests.support import load_cm, write_executable
+
 
 ROOT = Path(__file__).resolve().parents[1]
+AUTHORIZED_KEYS_MOUNT = load_cm().AUTHORIZED_KEYS_MOUNT
 
 
 class EntrypointHarness:
@@ -26,26 +28,26 @@ class EntrypointHarness:
         self.home = self.root / "home" / "me"
         self.ssh_dir = self.home / ".ssh"
         self.workspace = self.home / "workspace"
-        self.authorized_keys_src = self.root / "tmp" / "cm_authorized_keys"
+        self.authorized_keys_src = self.root / AUTHORIZED_KEYS_MOUNT.lstrip("/")
         self.authorized_keys_dst = self.ssh_dir / "authorized_keys"
 
         for path in (
             self.root / "etc" / "profile.d",
-            self.root / "tmp",
+            self.authorized_keys_src.parent,
             self.home,
             self.workspace,
             self.bin,
             self.state / "groups_by_gid",
-            self.state / "gids_by_group",
             self.state / "users_by_uid",
         ):
             path.mkdir(parents=True, exist_ok=True)
 
+        self.log.touch()
         (self.state / "uid").write_text("1000\n", encoding="utf-8")
         (self.state / "gid").write_text("1000\n", encoding="utf-8")
-        (self.state / "group_name").write_text("me\n", encoding="utf-8")
         self.add_group("me", "1000")
         self.add_user("me", "1000")
+        self.authorized_keys_src.write_text("ssh-ed25519 fake\n", encoding="utf-8")
         self._write_stubs()
         self.entrypoint = self._write_relocated_entrypoint()
 
@@ -54,37 +56,26 @@ class EntrypointHarness:
 
     def add_group(self, name: str, gid: str) -> None:
         (self.state / "groups_by_gid" / gid).write_text(f"{name}\n", encoding="utf-8")
-        (self.state / "gids_by_group" / name).write_text(f"{gid}\n", encoding="utf-8")
 
     def add_user(self, name: str, uid: str) -> None:
         (self.state / "users_by_uid" / uid).write_text(f"{name}\n", encoding="utf-8")
 
-    def write_authorized_keys(
-        self,
-        content: str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICmTestKey cm\n",
-    ) -> None:
-        self.authorized_keys_src.write_text(content, encoding="utf-8")
-
     def state_value(self, name: str) -> str:
         return (self.state / name).read_text(encoding="utf-8").strip()
 
+    def group_name(self) -> str:
+        return self.state_value(f"groups_by_gid/{self.state_value('gid')}")
+
     def log_text(self) -> str:
-        if not self.log.exists():
-            return ""
         return self.log.read_text(encoding="utf-8")
 
     def run(self, **env: str) -> subprocess.CompletedProcess[str]:
-        run_env = os.environ.copy()
-        for name in ("CM_HOST_UID", "CM_HOST_GID", "CM_TEST_WORKSPACE_WRITABLE"):
-            run_env.pop(name, None)
-        run_env.update(
-            {
-                "CM_TEST_STATE": str(self.state),
-                "CM_TEST_LOG": str(self.log),
-                "PATH": f"{self.bin}{os.pathsep}{run_env.get('PATH', '')}",
-            }
-        )
-        run_env.update(env)
+        run_env = {
+            "PATH": f"{self.bin}:/usr/bin:/bin",
+            "CM_TEST_STATE": str(self.state),
+            "CM_TEST_LOG": str(self.log),
+            **env,
+        }
         return subprocess.run(
             ["bash", str(self.entrypoint)],
             cwd=ROOT,
@@ -100,54 +91,55 @@ class EntrypointHarness:
             "/etc/profile.d/cm-path.sh": str(
                 self.root / "etc" / "profile.d" / "cm-path.sh"
             ),
-            "/tmp/cm_authorized_keys": str(self.authorized_keys_src),
+            AUTHORIZED_KEYS_MOUNT: str(self.authorized_keys_src),
             "/home/me": str(self.home),
+            "exec /usr/sbin/sshd -D -e": (
+                f"exec {shlex.quote(str(self.bin / 'sshd'))} -D -e"
+            ),
         }
         for original, replacement in replacements.items():
+            if original not in script:
+                raise AssertionError(
+                    f"entrypoint.sh no longer contains {original!r}; "
+                    "update EntrypointHarness"
+                )
             script = script.replace(original, replacement)
-        script = script.replace(
-            "exec /usr/sbin/sshd -D -e",
-            f"exec {shlex.quote(str(self.bin / 'sshd'))} -D -e",
-        )
 
         relocated = self.temp_path / "entrypoint.sh"
-        relocated.write_text(script, encoding="utf-8")
-        relocated.chmod(0o755)
+        write_executable(relocated, script)
         return relocated
 
     def _write_stub(self, name: str, body: str) -> None:
-        path = self.bin / name
-        path.write_text(
-            "#!/bin/sh\nset -eu\n" + textwrap.dedent(body).lstrip(),
-            encoding="utf-8",
+        write_executable(
+            self.bin / name,
+            "#!/bin/sh\n"
+            "set -eu\n"
+            + f"printf '{name} %s\\n' \"$*\" >> \"$CM_TEST_LOG\"\n"
+            + textwrap.dedent(body).lstrip(),
         )
-        path.chmod(0o755)
 
     def _write_stubs(self) -> None:
         self._write_stub(
             "id",
             r"""
-            printf 'id %s\n' "$*" >> "$CM_TEST_LOG"
-            if [ "$#" -eq 2 ] && [ "$1" = "-u" ] && [ "$2" = "me" ]; then
-                cat "$CM_TEST_STATE/uid"
-                exit 0
+            if [ "$#" -ne 2 ] || [ "$2" != "me" ]; then
+                echo "unsupported id args: $*" >&2
+                exit 64
             fi
-            if [ "$#" -eq 2 ] && [ "$1" = "-g" ] && [ "$2" = "me" ]; then
-                cat "$CM_TEST_STATE/gid"
-                exit 0
-            fi
-            if [ "$#" -eq 2 ] && [ "$1" = "-gn" ] && [ "$2" = "me" ]; then
-                cat "$CM_TEST_STATE/group_name"
-                exit 0
-            fi
-            echo "unsupported id args: $*" >&2
-            exit 64
+            case "$1" in
+                -u) cat "$CM_TEST_STATE/uid" ;;
+                -g) cat "$CM_TEST_STATE/gid" ;;
+                -gn) cat "$CM_TEST_STATE/groups_by_gid/$(cat "$CM_TEST_STATE/gid")" ;;
+                *)
+                    echo "unsupported id args: $*" >&2
+                    exit 64
+                    ;;
+            esac
             """,
         )
         self._write_stub(
             "getent",
             r"""
-            printf 'getent %s\n' "$*" >> "$CM_TEST_LOG"
             if [ "$#" -ne 2 ]; then
                 echo "unsupported getent args: $*" >&2
                 exit 64
@@ -155,16 +147,13 @@ class EntrypointHarness:
             if [ "$1" = "group" ]; then
                 entry="$CM_TEST_STATE/groups_by_gid/$2"
                 [ -f "$entry" ] || exit 2
-                name="$(cat "$entry")"
-                printf '%s:x:%s:\n' "$name" "$2"
+                printf '%s:x:%s:\n' "$(cat "$entry")" "$2"
                 exit 0
             fi
             if [ "$1" = "passwd" ]; then
                 entry="$CM_TEST_STATE/users_by_uid/$2"
                 [ -f "$entry" ] || exit 2
-                name="$(cat "$entry")"
-                gid="$(cat "$CM_TEST_STATE/gid")"
-                printf '%s:x:%s:%s::/home/%s:/bin/bash\n' "$name" "$2" "$gid" "$name"
+                printf '%s:x:%s:0::/:/bin/sh\n' "$(cat "$entry")" "$2"
                 exit 0
             fi
             echo "unsupported getent database: $1" >&2
@@ -174,128 +163,77 @@ class EntrypointHarness:
         self._write_stub(
             "groupmod",
             r"""
-            printf 'groupmod %s\n' "$*" >> "$CM_TEST_LOG"
             if [ "$#" -ne 3 ] || [ "$1" != "-g" ] || [ "$3" != "me" ]; then
                 echo "unsupported groupmod args: $*" >&2
                 exit 64
             fi
-            new_gid="$2"
-            existing="$CM_TEST_STATE/groups_by_gid/$new_gid"
-            if [ -f "$existing" ] && [ "$(cat "$existing")" != "me" ]; then
-                echo "groupmod: GID $new_gid already exists" >&2
+            entry="$CM_TEST_STATE/groups_by_gid/$2"
+            if [ -f "$entry" ] && [ "$(cat "$entry")" != "me" ]; then
+                echo "groupmod: GID $2 already exists" >&2
                 exit 4
             fi
-            old_gid="$(cat "$CM_TEST_STATE/gids_by_group/me")"
-            rm -f "$CM_TEST_STATE/groups_by_gid/$old_gid"
-            printf 'me\n' > "$CM_TEST_STATE/groups_by_gid/$new_gid"
-            printf '%s\n' "$new_gid" > "$CM_TEST_STATE/gids_by_group/me"
-            printf '%s\n' "$new_gid" > "$CM_TEST_STATE/gid"
-            printf 'me\n' > "$CM_TEST_STATE/group_name"
+            rm -f "$(grep -lxF me "$CM_TEST_STATE/groups_by_gid"/*)"
+            printf 'me\n' > "$entry"
+            # like real groupmod, passwd entries follow the group's gid change
+            printf '%s\n' "$2" > "$CM_TEST_STATE/gid"
             """,
         )
         self._write_stub(
             "usermod",
             r"""
-            printf 'usermod %s\n' "$*" >> "$CM_TEST_LOG"
             if [ "$#" -eq 3 ] && [ "$1" = "-g" ] && [ "$3" = "me" ]; then
-                gid_file="$CM_TEST_STATE/gids_by_group/$2"
-                [ -f "$gid_file" ] || {
+                entry="$(grep -lxF "$2" "$CM_TEST_STATE/groups_by_gid"/*)" || {
                     echo "usermod: group $2 does not exist" >&2
                     exit 6
                 }
-                gid="$(cat "$gid_file")"
-                printf '%s\n' "$gid" > "$CM_TEST_STATE/gid"
-                printf '%s\n' "$2" > "$CM_TEST_STATE/group_name"
+                basename "$entry" > "$CM_TEST_STATE/gid"
                 exit 0
             fi
             if [ "$#" -eq 3 ] && [ "$1" = "-u" ] && [ "$3" = "me" ]; then
-                new_uid="$2"
-                existing="$CM_TEST_STATE/users_by_uid/$new_uid"
-                if [ -f "$existing" ] && [ "$(cat "$existing")" != "me" ]; then
-                    echo "usermod: UID $new_uid already exists" >&2
+                entry="$CM_TEST_STATE/users_by_uid/$2"
+                if [ -f "$entry" ] && [ "$(cat "$entry")" != "me" ]; then
+                    echo "usermod: UID $2 already exists" >&2
                     exit 4
                 fi
-                old_uid="$(cat "$CM_TEST_STATE/uid")"
-                rm -f "$CM_TEST_STATE/users_by_uid/$old_uid"
-                printf 'me\n' > "$CM_TEST_STATE/users_by_uid/$new_uid"
-                printf '%s\n' "$new_uid" > "$CM_TEST_STATE/uid"
+                rm -f "$CM_TEST_STATE/users_by_uid/$(cat "$CM_TEST_STATE/uid")"
+                printf 'me\n' > "$entry"
+                printf '%s\n' "$2" > "$CM_TEST_STATE/uid"
                 exit 0
             fi
             echo "unsupported usermod args: $*" >&2
             exit 64
             """,
         )
-        self._write_stub(
-            "chown",
-            r"""
-            printf 'chown %s\n' "$*" >> "$CM_TEST_LOG"
-            """,
-        )
+        self._write_stub("chown", "")
         self._write_stub(
             "install",
             r"""
-            printf 'install %s\n' "$*" >> "$CM_TEST_LOG"
-            directory=0
-            mode=
-            while [ "$#" -gt 0 ]; do
-                case "$1" in
-                    -d)
-                        directory=1
-                        shift
-                        ;;
-                    -o|-g|-m)
-                        if [ "$1" = "-m" ]; then
-                            mode="$2"
-                        fi
-                        shift 2
-                        ;;
-                    *)
-                        break
-                        ;;
-                esac
-            done
-            if [ "$directory" -eq 1 ]; then
-                [ "$#" -eq 1 ] || {
-                    echo "unsupported install directory args" >&2
-                    exit 64
-                }
-                mkdir -p "$1"
-                chmod "$mode" "$1"
-                exit 0
-            fi
-            [ "$#" -eq 2 ] || {
-                echo "unsupported install file args" >&2
+            if [ "$#" -eq 8 ] && [ "$1" = "-d" ]; then
+                # install -d -o OWNER -g GROUP -m MODE DIR
+                mkdir -p "$8"
+                chmod "$7" "$8"
+            elif [ "$#" -eq 8 ] && [ "$1" = "-o" ]; then
+                # install -o OWNER -g GROUP -m MODE SRC DST
+                cp "$7" "$8"
+                chmod "$6" "$8"
+            else
+                echo "unsupported install args: $*" >&2
                 exit 64
-            }
-            mkdir -p "$(dirname "$2")"
-            cp "$1" "$2"
-            chmod "$mode" "$2"
+            fi
             """,
         )
         self._write_stub(
             "sudo",
             r"""
-            printf 'sudo %s\n' "$*" >> "$CM_TEST_LOG"
-            if [ "$#" -eq 5 ] && \
-                [ "$1" = "-u" ] && \
-                [ "$2" = "me" ] && \
-                [ "$3" = "test" ] && \
-                [ "$4" = "-w" ]; then
-                if [ "${CM_TEST_WORKSPACE_WRITABLE:-1}" = "1" ]; then
-                    exit 0
-                fi
-                exit 1
+            if [ "$#" -lt 3 ] || [ "$1" != "-u" ]; then
+                echo "unsupported sudo args: $*" >&2
+                exit 64
             fi
-            echo "unsupported sudo args: $*" >&2
-            exit 64
+            shift 2
+            exec "$@"
             """,
         )
-        self._write_stub(
-            "sshd",
-            r"""
-            printf 'sshd %s\n' "$*" >> "$CM_TEST_LOG"
-            """,
-        )
+        self._write_stub("sshd", "")
 
 
 class RuntimeImageTests(unittest.TestCase):
@@ -320,6 +258,13 @@ class RuntimeImageTests(unittest.TestCase):
             )
             position = next_position
 
+    def assert_nothing_provisioned(
+        self, harness: EntrypointHarness, log: str
+    ) -> None:
+        self.assertNotIn("install -o", log)
+        self.assertNotIn("sshd -D -e", log)
+        self.assertFalse(harness.authorized_keys_dst.exists())
+
     def test_entrypoint_is_valid_bash(self):
         result = subprocess.run(
             ["bash", "-n", str(ROOT / "entrypoint.sh")],
@@ -332,7 +277,6 @@ class RuntimeImageTests(unittest.TestCase):
 
     def test_entrypoint_remaps_user_installs_authorized_keys_and_starts_sshd(self):
         harness = self.make_entrypoint_harness()
-        harness.write_authorized_keys()
         bashrc = harness.home / ".bashrc"
         bashrc.write_text("# keep me\n", encoding="utf-8")
 
@@ -341,7 +285,7 @@ class RuntimeImageTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(harness.state_value("uid"), "1234")
         self.assertEqual(harness.state_value("gid"), "2345")
-        self.assertEqual(harness.state_value("group_name"), "me")
+        self.assertEqual(harness.group_name(), "me")
         self.assertEqual(
             (harness.root / "etc" / "profile.d" / "cm-path.sh").read_text(
                 encoding="utf-8"
@@ -389,14 +333,13 @@ class RuntimeImageTests(unittest.TestCase):
     def test_entrypoint_switches_to_existing_group_on_gid_collision(self):
         harness = self.make_entrypoint_harness()
         harness.add_group("hostgroup", "2345")
-        harness.write_authorized_keys()
 
         result = harness.run(CM_HOST_UID="1000", CM_HOST_GID="2345")
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(harness.state_value("uid"), "1000")
         self.assertEqual(harness.state_value("gid"), "2345")
-        self.assertEqual(harness.state_value("group_name"), "hostgroup")
+        self.assertEqual(harness.group_name(), "hostgroup")
 
         log = harness.log_text()
         self.assertIn("getent group 2345", log)
@@ -407,7 +350,6 @@ class RuntimeImageTests(unittest.TestCase):
     def test_entrypoint_rejects_uid_collision_before_usermod(self):
         harness = self.make_entrypoint_harness()
         harness.add_user("taken", "1234")
-        harness.write_authorized_keys()
 
         result = harness.run(CM_HOST_UID="1234", CM_HOST_GID="1000")
 
@@ -417,13 +359,10 @@ class RuntimeImageTests(unittest.TestCase):
         log = harness.log_text()
         self.assertIn("getent passwd 1234", log)
         self.assertNotIn("usermod -u 1234 me", log)
-        self.assertNotIn("install -o", log)
-        self.assertNotIn("sshd -D -e", log)
-        self.assertFalse(harness.authorized_keys_dst.exists())
+        self.assert_nothing_provisioned(harness, log)
 
     def test_entrypoint_rejects_invalid_uid_gid_before_remapping(self):
         harness = self.make_entrypoint_harness()
-        harness.write_authorized_keys()
 
         result = harness.run(CM_HOST_UID="0", CM_HOST_GID="2345")
 
@@ -433,19 +372,13 @@ class RuntimeImageTests(unittest.TestCase):
         log = harness.log_text()
         self.assertNotIn("groupmod", log)
         self.assertNotIn("usermod", log)
-        self.assertNotIn("install -o", log)
-        self.assertNotIn("sshd -D -e", log)
-        self.assertFalse(harness.authorized_keys_dst.exists())
+        self.assert_nothing_provisioned(harness, log)
 
     def test_entrypoint_rejects_unwritable_workspace_before_sshd(self):
         harness = self.make_entrypoint_harness()
-        harness.write_authorized_keys()
+        harness.workspace.chmod(0o555)
 
-        result = harness.run(
-            CM_HOST_UID="1234",
-            CM_HOST_GID="2345",
-            CM_TEST_WORKSPACE_WRITABLE="0",
-        )
+        result = harness.run(CM_HOST_UID="1234", CM_HOST_GID="2345")
 
         self.assertEqual(result.returncode, 1)
         self.assertIn("workspace is not writable by user me", result.stderr)

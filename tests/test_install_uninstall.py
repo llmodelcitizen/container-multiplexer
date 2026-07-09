@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.support import write_executable
+
 
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SH = ROOT / "install.sh"
@@ -24,11 +26,6 @@ def run_uninstall(install_dir: Path) -> subprocess.CompletedProcess[str]:
         check=False,
         env=env,
     )
-
-
-def write_executable(path: Path, text: str) -> None:
-    path.write_text(text, encoding="utf-8")
-    path.chmod(0o755)
 
 
 def make_fake_python(fake_bin: Path) -> Path:

@@ -7,10 +7,13 @@ import unittest
 import uuid
 from pathlib import Path
 
+from tests.support import load_cm
+
 
 ROOT = Path(__file__).resolve().parents[1]
+AUTHORIZED_KEYS_MOUNT = load_cm().AUTHORIZED_KEYS_MOUNT
 SMOKE_UID = "42424"
-SMOKE_GID = "42424"
+SMOKE_GID = "42425"
 
 
 @unittest.skipUnless(
@@ -18,42 +21,25 @@ SMOKE_GID = "42424"
     "set CM_REAL_DOCKER_SMOKE=1 to run the opt-in Docker smoke test",
 )
 class RealDockerSmokeTests(unittest.TestCase):
-    def run_docker(self, args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    def run_docker(
+        self, args: list[str], *, check: bool = True, **kwargs
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["docker", *args],
             cwd=ROOT,
             text=True,
-            check=True,
+            check=check,
             **kwargs,
         )
 
     def test_builds_and_runs_runtime_image_with_real_docker(self) -> None:
-        subprocess.run(
-            ["docker", "version"],
-            cwd=ROOT,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["docker", "build", "-t", "cm-base:latest", "-f", "Dockerfile.base", "."],
-            cwd=ROOT,
-            text=True,
-            check=True,
-        )
-        subprocess.run(
-            ["docker", "build", "-t", "cm:smoke", "."],
-            cwd=ROOT,
-            text=True,
-            check=True,
-        )
+        self.run_docker(["version"], capture_output=True)
+        self.run_docker(["build", "-t", "cm-base:latest", "-f", "Dockerfile.base", "."])
+        self.run_docker(["build", "-t", "cm:smoke", "."])
 
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_keys = Path(temp_dir) / "authorized_keys"
-            auth_keys.write_text(
-                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAICmSmokeKey cm-smoke\n",
-                encoding="utf-8",
-            )
+            auth_keys.write_text("ssh-ed25519 fake\n", encoding="utf-8")
             container_name = f"cm-smoke-{uuid.uuid4().hex}"
 
             try:
@@ -68,30 +54,23 @@ class RealDockerSmokeTests(unittest.TestCase):
                         "-e",
                         f"CM_HOST_GID={SMOKE_GID}",
                         "-v",
-                        f"{auth_keys}:/tmp/cm_authorized_keys:ro",
+                        f"{auth_keys}:{AUTHORIZED_KEYS_MOUNT}:ro",
                         "cm:smoke",
                     ],
                     capture_output=True,
                 )
-                uid = self.run_docker(
-                    ["exec", container_name, "id", "-u", "me"],
-                    capture_output=True,
-                ).stdout.strip()
-                gid = self.run_docker(
-                    ["exec", container_name, "id", "-g", "me"],
-                    capture_output=True,
-                ).stdout.strip()
-                authorized_keys = self.run_docker(
+                probe = self.run_docker(
                     [
                         "exec",
                         container_name,
-                        "stat",
-                        "-c",
-                        "%u:%g %a %s",
-                        "/home/me/.ssh/authorized_keys",
+                        "sh",
+                        "-ec",
+                        "id -u me; id -g me; "
+                        "stat -c '%u:%g %a %s' /home/me/.ssh/authorized_keys",
                     ],
                     capture_output=True,
-                ).stdout.strip()
+                )
+                uid, gid, authorized_keys = probe.stdout.strip().splitlines()
 
                 self.assertEqual(uid, SMOKE_UID)
                 self.assertEqual(gid, SMOKE_GID)
@@ -100,12 +79,11 @@ class RealDockerSmokeTests(unittest.TestCase):
                     authorized_keys,
                 )
             finally:
-                subprocess.run(
-                    ["docker", "rm", "-f", container_name],
-                    text=True,
+                self.run_docker(
+                    ["rm", "-f", container_name],
+                    check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    check=False,
                 )
 
 
