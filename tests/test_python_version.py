@@ -24,7 +24,3 @@ class PythonVersionGuardTests(unittest.TestCase):
 
         self.assertEqual(result, 1)
         self.assertIn("3.9", err.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()

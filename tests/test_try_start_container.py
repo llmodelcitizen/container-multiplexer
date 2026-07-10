@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.support import (
+    FAKE_SSH_KEY,
     FakeAPIError,
     FakeClient,
     FakeContainer,
@@ -21,7 +22,7 @@ class TryStartContainerTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.auth_keys = Path(self.temp_dir.name) / "authorized_keys"
-        self.auth_keys.write_text("ssh-ed25519 fake\n")
+        self.auth_keys.write_text(FAKE_SSH_KEY)
         self.workspace = Path(self.temp_dir.name) / "cm.001"
         self.cfg = {
             "container": "cm-001",
@@ -30,8 +31,11 @@ class TryStartContainerTests(unittest.TestCase):
         }
 
     def run_try_start(self, client: FakeClient):
+        # Pin the host-independent part of the container environment so these
+        # tests do not depend on the platform (or UID/GID) running the suite.
+        environment = {self.cm.AUTHORIZED_KEYS_SRC_ENV: self.cm.AUTHORIZED_KEYS_MOUNT}
         with mock.patch.object(self.cm, "get_authorized_keys_path", return_value=self.auth_keys), \
-                mock.patch.object(self.cm, "get_container_environment", return_value=None):
+                mock.patch.object(self.cm, "get_container_environment", return_value=environment):
             return self.cm.try_start_container(client, 1, self.cfg)
 
     def test_port_allocation_error_removes_failed_container_and_retries_next_port(self) -> None:
@@ -133,6 +137,10 @@ class TryStartContainerTests(unittest.TestCase):
             kwargs["volumes"][str(self.workspace)],
             {"bind": "/home/me/workspace", "mode": "rw"},
         )
+        self.assertEqual(
+            kwargs["environment"],
+            {self.cm.AUTHORIZED_KEYS_SRC_ENV: self.cm.AUTHORIZED_KEYS_MOUNT},
+        )
 
     def test_run_kwargs_do_not_set_a_resurrecting_restart_policy(self) -> None:
         client = FakeClient()
@@ -150,7 +158,3 @@ class TryStartContainerTests(unittest.TestCase):
             (None, {}, {"Name": ""}, {"Name": "no"}),
             f"unexpected restart_policy: {policy!r}",
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

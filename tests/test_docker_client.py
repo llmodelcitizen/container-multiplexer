@@ -83,7 +83,3 @@ class DockerClientTests(unittest.TestCase):
         self.assertIn("DOCKER_HOST", message)
         self.assertIn("docker info", message)
         self.assertIn("default socket missing", message)
-
-
-if __name__ == "__main__":
-    unittest.main()

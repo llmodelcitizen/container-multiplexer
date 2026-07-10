@@ -82,7 +82,3 @@ class InstanceResolutionTests(unittest.TestCase):
             client.api.calls,
             [{"all": True, "filters": {"label": "cm.managed=true"}}],
         )
-
-
-if __name__ == "__main__":
-    unittest.main()

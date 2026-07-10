@@ -144,7 +144,3 @@ class ArgparseMainTests(unittest.TestCase):
 
         self.assertEqual(result, 130)
         self.assertIn("Interrupted", stderr.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()

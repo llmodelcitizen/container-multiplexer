@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.support import FAKE_SSH_KEY
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -166,7 +168,7 @@ class UpdateTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
         self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
     def make_container(
         self,
@@ -368,7 +370,3 @@ class UpdateTests(unittest.TestCase):
         self.assertIn("docker build -t cm:latest .", output)
         self.assertEqual(client.containers.run_calls, [])
         self.assertEqual(old_container.renames, [])
-
-
-if __name__ == "__main__":
-    unittest.main()

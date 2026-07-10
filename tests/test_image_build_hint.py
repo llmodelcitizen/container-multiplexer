@@ -64,7 +64,3 @@ class ImageBuildHintTests(unittest.TestCase):
         self.assertIn("Image 'cm:latest' not found.", output)
         self.assertIn("docker build -t cm-base:latest -f Dockerfile.base .", output)
         self.assertIn("docker build -t cm:latest .", output)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.support import write_executable
+from tests.support import FAKE_SSH_KEY, write_executable
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -192,7 +192,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             old_python = fake_bin / "python3"
             # Fail the version probe (`-c`) but otherwise behave like a python.
             write_executable(
@@ -230,7 +230,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             (home / ".cm").write_text("not a directory\n", encoding="utf-8")
 
             result = run_install(home, install_dir, fake_python=make_fake_python(fake_bin))
@@ -247,7 +247,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             (home / ".cm" / "authorized_keys").mkdir(parents=True)
 
             result = run_install(home, install_dir, fake_python=make_fake_python(fake_bin))
@@ -264,7 +264,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             stale = install_dir / ".cm-venv" / "stale"
             stale.parent.mkdir(parents=True)
             stale.write_text("old venv\n", encoding="utf-8")
@@ -283,7 +283,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             pip_log = root / "pip.log"
             fake_python = make_fake_python(fake_bin)
             env = os.environ.copy()
@@ -315,7 +315,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             fake_python = make_fake_python(fake_bin)
             env = os.environ.copy()
             env.update({
@@ -358,7 +358,7 @@ class InstallUninstallTests(unittest.TestCase):
             fake_bin = root / "fake-bin"
             fake_bin.mkdir(parents=True)
             (home / ".ssh").mkdir(parents=True)
-            (home / ".ssh" / "cm_ed25519.pub").write_text("ssh-ed25519 fake\n", encoding="utf-8")
+            (home / ".ssh" / "cm_ed25519.pub").write_text(FAKE_SSH_KEY, encoding="utf-8")
             fake_python = make_fake_python(fake_bin)
             env = os.environ.copy()
             env.update({
@@ -408,7 +408,3 @@ class InstallUninstallTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f"Nothing to remove in {install_dir}", result.stdout)
             self.assertNotIn("Uninstalled successfully!", result.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()

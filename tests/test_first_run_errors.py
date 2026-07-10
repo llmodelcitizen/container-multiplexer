@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import FakeClient, FakeContainer, load_cm
+from tests.support import FAKE_SSH_KEY, FakeClient, FakeContainer, load_cm
 
 
 class FirstRunErrorTests(unittest.TestCase):
@@ -105,14 +105,10 @@ class FirstRunErrorTests(unittest.TestCase):
 
     def test_get_authorized_keys_path_exits_when_unreadable(self) -> None:
         self.cm.AUTHORIZED_KEYS_PATH.parent.mkdir(parents=True)
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
         with mock.patch.object(self.cm.os, "access", return_value=False):
             exc, stderr = self.capture_authorized_keys_exit()
 
         self.assertEqual(exc.code, 1)
         self.assertIn("Cannot read authorized_keys source", stderr)
-
-
-if __name__ == "__main__":
-    unittest.main()

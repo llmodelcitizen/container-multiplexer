@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import functools
 import importlib.machinery
 import importlib.util
 import types
@@ -8,6 +9,8 @@ from typing import Any, Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+FAKE_SSH_KEY = "ssh-ed25519 fake\n"
 
 
 def write_executable(path: Path, text: str) -> None:
@@ -34,6 +37,22 @@ def load_cm(module_name: str = "cm_under_test"):
     loader.exec_module(module)
     install_fake_docker_sdk(module)
     return module
+
+
+@functools.cache
+def _cm_constants():
+    """One shared, never-mutated cm.py execution for constant lookups."""
+    return load_cm("cm_constants")
+
+
+def authorized_keys_mount() -> str:
+    """Resolve cm.py's AUTHORIZED_KEYS_MOUNT lazily, executing cm.py at most once."""
+    return _cm_constants().AUTHORIZED_KEYS_MOUNT
+
+
+def authorized_keys_src_env() -> str:
+    """Resolve cm.py's AUTHORIZED_KEYS_SRC_ENV lazily, sharing the cached module."""
+    return _cm_constants().AUTHORIZED_KEYS_SRC_ENV
 
 
 def install_fake_docker_sdk(module) -> None:

@@ -11,7 +11,10 @@ export PATH="$HOME/.local/bin:$PATH"
 EOF
 chmod 644 /etc/profile.d/cm-path.sh
 
-AUTHORIZED_KEYS_SRC="/tmp/cm_authorized_keys"
+# cm.py mounts the authorized_keys file and passes its location via
+# CM_AUTHORIZED_KEYS_SRC (see get_container_environment). The fallback only
+# covers manual `docker run` and must match cm.py's AUTHORIZED_KEYS_MOUNT.
+AUTHORIZED_KEYS_SRC="${CM_AUTHORIZED_KEYS_SRC:-/tmp/cm_authorized_keys}"
 AUTHORIZED_KEYS_DST="/home/me/.ssh/authorized_keys"
 SSH_DIR="/home/me/.ssh"
 WORKSPACE_DIR="/home/me/workspace"

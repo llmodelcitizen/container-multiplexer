@@ -279,7 +279,3 @@ class TmuxCommandTests(unittest.TestCase):
 
         self.assertIn("cm-s1", str(ctx.exception))
         self.assertIn(["kill-session", "-t", "=cm-s1"], commands)
-
-
-if __name__ == "__main__":
-    unittest.main()

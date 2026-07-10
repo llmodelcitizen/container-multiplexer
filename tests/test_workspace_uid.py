@@ -10,6 +10,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from tests.support import FAKE_SSH_KEY
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -68,7 +70,7 @@ class WorkspaceUidTests(unittest.TestCase):
         client = FakeClient()
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_keys = Path(temp_dir) / "authorized_keys"
-            auth_keys.write_text("ssh-ed25519 fake\n")
+            auth_keys.write_text(FAKE_SSH_KEY)
             cfg = {
                 "container": "cm-001",
                 "port": 2201,
@@ -83,14 +85,18 @@ class WorkspaceUidTests(unittest.TestCase):
         self.assertEqual(client.containers.image, self.cm.IMAGE_NAME)
         self.assertEqual(
             client.containers.kwargs["environment"],
-            {"CM_HOST_UID": "1234", "CM_HOST_GID": "2345"},
+            {
+                "CM_HOST_UID": "1234",
+                "CM_HOST_GID": "2345",
+                "CM_AUTHORIZED_KEYS_SRC": self.cm.AUTHORIZED_KEYS_MOUNT,
+            },
         )
 
     def test_macos_container_creation_does_not_set_uid_gid_environment(self) -> None:
         client = FakeClient()
         with tempfile.TemporaryDirectory() as temp_dir:
             auth_keys = Path(temp_dir) / "authorized_keys"
-            auth_keys.write_text("ssh-ed25519 fake\n")
+            auth_keys.write_text(FAKE_SSH_KEY)
             cfg = {
                 "container": "cm-001",
                 "port": 2201,
@@ -102,7 +108,17 @@ class WorkspaceUidTests(unittest.TestCase):
                 port, error = self.cm.try_start_container(client, 1, cfg)
 
         self.assertEqual((port, error), (2201, None))
-        self.assertNotIn("environment", client.containers.kwargs)
+        # The authorized_keys mount path is passed on every platform; only the
+        # Linux UID/GID mirroring is platform-gated.
+        environment = client.containers.kwargs["environment"]
+        self.assertEqual(
+            environment,
+            {"CM_AUTHORIZED_KEYS_SRC": self.cm.AUTHORIZED_KEYS_MOUNT},
+        )
+        self.assertEqual(
+            environment["CM_AUTHORIZED_KEYS_SRC"],
+            client.containers.kwargs["volumes"][str(auth_keys)]["bind"],
+        )
 
     def test_linux_root_preflight_fails_before_creating_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -179,7 +195,3 @@ class WorkspaceUidTests(unittest.TestCase):
 
         with self.host_identity("linux", uid=1000, gid=100):
             self.assertIsNone(self.cm.get_existing_container_identity_error(container, 1))
-
-
-if __name__ == "__main__":
-    unittest.main()

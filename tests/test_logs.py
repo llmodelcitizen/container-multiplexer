@@ -96,7 +96,3 @@ class LogCommandTests(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(output, "emoji: \U0001f600\n")
-
-
-if __name__ == "__main__":
-    unittest.main()

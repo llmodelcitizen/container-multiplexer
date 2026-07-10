@@ -338,7 +338,3 @@ printf '%s\n' "${COMPREPLY[@]}"
         parser_commands = set(parser_match.group(1).split(","))
 
         self.assertEqual(completion_commands, parser_commands)
-
-
-if __name__ == "__main__":
-    unittest.main()

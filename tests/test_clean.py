@@ -185,7 +185,3 @@ class CleanCommandTests(unittest.TestCase):
         file_result, file_output = self.run_clean(FakeClient(), "y")
         self.assertEqual(file_result, 1)
         self.assertIn("workspace path is not a directory", file_output)
-
-
-if __name__ == "__main__":
-    unittest.main()

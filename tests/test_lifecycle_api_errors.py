@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import FakeAPIError, FakeClient, FakeContainer, load_cm
+from tests.support import FAKE_SSH_KEY, FakeAPIError, FakeClient, FakeContainer, load_cm
 
 
 class LifecycleAPIErrorTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
         self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
     def capture_stdout(self, func, *args):
         stdout = io.StringIO()
@@ -185,7 +185,3 @@ class LifecycleAPIErrorTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertIn("Instance 1 does not exist", combined)
         self.assertIn("remain on disk", combined)
-
-
-if __name__ == "__main__":
-    unittest.main()

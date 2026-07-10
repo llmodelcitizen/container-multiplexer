@@ -26,7 +26,3 @@ class MainBrokenPipeTests(unittest.TestCase):
 
         self.assertEqual(result, 141)
         dup2.assert_called_once()
-
-
-if __name__ == "__main__":
-    unittest.main()

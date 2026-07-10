@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import FakeAPIError, FakeClient, FakeContainer, load_cm
+from tests.support import FAKE_SSH_KEY, FakeAPIError, FakeClient, FakeContainer, load_cm
 
 
 class UpdateFailureBranchTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class UpdateFailureBranchTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
         self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
     def make_client(self, old_container: FakeContainer, *, run_error: Exception | None = None) -> FakeClient:
         registry = {old_container.name: old_container}
@@ -128,7 +128,3 @@ class UpdateFailureBranchTests(unittest.TestCase):
         self.assertIn("remove failed", "\n".join(stdout_messages))
         self.assertIn("Updated instance 1 from stale image", "\n".join(stdout_messages))
         self.assertEqual(old.remove_calls, [{"force": True}])
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 
 import shutil
 import warnings
-warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
 if TYPE_CHECKING:
     import docker
@@ -30,8 +29,34 @@ _DOCKER_IMPORT_ERROR = (
 )
 _docker_sdk: Any | None = None
 
+
+def _suppress_urllib3_openssl_warning() -> None:
+    """Silence the urllib3 LibreSSL warning that importing docker triggers.
+
+    Applied when the CLI starts and before the Docker SDK import rather than
+    at module import, so executing cm.py leaves the process-global warnings
+    filters untouched.
+    """
+    warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
+
+
+def _resolve_cm_home() -> Path:
+    """Locate ~/.cm without letting an unresolvable home break execution.
+
+    Path.home() raises RuntimeError when the home directory cannot be
+    determined (HOME unset and the uid missing from the passwd database).
+    Fall back to a sentinel under the system temp directory so executing
+    cm.py never crashes; commands that touch the fallback fail with errors
+    naming that path instead.
+    """
+    try:
+        return Path.home() / ".cm"
+    except RuntimeError:
+        return Path(tempfile.gettempdir()) / "cm-unresolved-home" / ".cm"
+
+
 SCRIPT_DIR = Path(__file__).parent.resolve()
-CM_HOME = Path.home() / ".cm"
+CM_HOME = _resolve_cm_home()
 BASE_PORT = 2200
 SSH_CONTAINER_PORT = 22
 SSH_CONTAINER_PORT_PROTO = f"{SSH_CONTAINER_PORT}/tcp"
@@ -47,6 +72,7 @@ IMAGE_BUILD_COMMANDS = (
 WORKSPACES_DIR = CM_HOME / "workspaces"
 AUTHORIZED_KEYS_PATH = CM_HOME / "authorized_keys"
 AUTHORIZED_KEYS_MOUNT = "/tmp/cm_authorized_keys"
+AUTHORIZED_KEYS_SRC_ENV = "CM_AUTHORIZED_KEYS_SRC"
 CONTAINER_DEFAULT_UID = 1000
 CONTAINER_DEFAULT_GID = 1000
 LINUX_HOST_UID_ENV = "CM_HOST_UID"
@@ -118,6 +144,7 @@ def get_docker_sdk() -> Any:
     global _docker_sdk
 
     if _docker_sdk is None:
+        _suppress_urllib3_openssl_warning()
         try:
             import docker as docker_sdk
         except ImportError:
@@ -458,17 +485,20 @@ def get_linux_host_identity() -> tuple[int, int] | None:
     return (uid, gid)
 
 
-def get_container_environment() -> dict[str, str] | None:
-    """Return environment variables to apply when creating new containers."""
-    identity = get_linux_host_identity()
-    if identity is None:
-        return None
+def get_container_environment() -> dict[str, str]:
+    """Return environment variables to apply when creating new containers.
 
-    uid, gid = identity
-    return {
-        LINUX_HOST_UID_ENV: str(uid),
-        LINUX_HOST_GID_ENV: str(gid),
-    }
+    Always tells the entrypoint where the authorized_keys file is mounted, so
+    cm.py stays the single runtime source of truth for that path. On native
+    Linux the host UID/GID are mirrored in as well.
+    """
+    environment = {AUTHORIZED_KEYS_SRC_ENV: AUTHORIZED_KEYS_MOUNT}
+    identity = get_linux_host_identity()
+    if identity is not None:
+        uid, gid = identity
+        environment[LINUX_HOST_UID_ENV] = str(uid)
+        environment[LINUX_HOST_GID_ENV] = str(gid)
+    return environment
 
 
 def prepare_workspace(workspace: Path) -> None:
@@ -908,9 +938,8 @@ def try_start_container(
                     },
                 },
                 "labels": {MANAGED_LABEL: MANAGED_LABEL_VALUE},
+                "environment": environment,
             }
-            if environment:
-                run_kwargs["environment"] = environment
             client.containers.run(IMAGE_NAME, **run_kwargs)
             return (port, None)
         except docker_sdk.errors.APIError as e:
@@ -3074,6 +3103,7 @@ def _exit_broken_pipe() -> int:
 
 
 def main() -> int:
+    _suppress_urllib3_openssl_warning()
     if sys.version_info < (3, 9):
         print(
             "cm requires Python 3.9 or newer "

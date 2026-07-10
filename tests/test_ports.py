@@ -375,7 +375,3 @@ class PortLookupTests(unittest.TestCase):
         error = FakeAPIError("image not found")
 
         self.assertFalse(self.cm.is_port_allocation_error(error))
-
-
-if __name__ == "__main__":
-    unittest.main()

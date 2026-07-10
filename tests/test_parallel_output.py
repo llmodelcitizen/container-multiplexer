@@ -88,7 +88,3 @@ class ParallelOutputTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("started instance", output)
         self.assertIn("Interrupted; run 'cm list' to inspect instance state.", output)
-
-
-if __name__ == "__main__":
-    unittest.main()

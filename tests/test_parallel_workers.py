@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from tests.support import FakeClient, FakeContainer, FakeNotFound, load_cm
+from tests.support import FAKE_SSH_KEY, FakeClient, FakeContainer, FakeNotFound, load_cm
 
 
 class ParallelWorkerTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class ParallelWorkerTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
         self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
     def run_worker(self, worker, client: FakeClient, *args):
         with mock.patch.object(self.cm, "get_client", return_value=client), \
@@ -204,7 +204,3 @@ class ParallelWorkerTests(unittest.TestCase):
         self.assertEqual(result, 1)
         self.assertEqual(calls, [])
         self.assertIn("authorized_keys source is not a file", stderr.getvalue())
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -9,6 +9,8 @@ import types
 import unittest
 from pathlib import Path
 
+from tests.support import FAKE_SSH_KEY
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -134,7 +136,7 @@ class InspectTests(unittest.TestCase):
         self.addCleanup(self.temp_dir.cleanup)
         self.cm.WORKSPACES_DIR = Path(self.temp_dir.name) / "workspaces"
         self.cm.AUTHORIZED_KEYS_PATH = Path(self.temp_dir.name) / "authorized_keys"
-        self.cm.AUTHORIZED_KEYS_PATH.write_text("ssh-ed25519 fake\n")
+        self.cm.AUTHORIZED_KEYS_PATH.write_text(FAKE_SSH_KEY)
 
     def attrs(self, workspace: Path, image_id: str = "sha256:aaaaaaaaaaaaaaaa"):
         return {
@@ -395,7 +397,3 @@ class IdentityChecksTests(unittest.TestCase):
         self.assertIn("group", message)
         self.assertIn("1000", message)
         self.assertIn("100", message)
-
-
-if __name__ == "__main__":
-    unittest.main()

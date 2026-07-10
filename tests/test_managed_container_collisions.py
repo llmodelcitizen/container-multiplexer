@@ -179,7 +179,3 @@ class ManagedContainerCollisionTests(unittest.TestCase):
                     self.assertEqual(container.started, 0)
                     self.assertEqual(container.stopped, 0)
                     self.assertEqual(container.removed, 1)
-
-
-if __name__ == "__main__":
-    unittest.main()
